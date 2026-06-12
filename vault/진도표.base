@@ -1,0 +1,63 @@
+filters:
+  and:
+    - file.hasTag("service")
+properties:
+  file.name:
+    displayName: 서비스
+  note.status:
+    displayName: 진도
+  note.confidence:
+    displayName: 자신감
+  note.exams:
+    displayName: 시험
+  note.domains:
+    displayName: 도메인
+views:
+  - type: table
+    name: 전체
+    order:
+      - file.name
+      - status
+      - confidence
+      - exams
+      - domains
+  - type: table
+    name: SAA
+    filters:
+      and:
+        - exams.contains("saa")
+    order:
+      - file.name
+      - status
+      - confidence
+      - domains
+  - type: table
+    name: DVA
+    filters:
+      and:
+        - exams.contains("dva")
+    order:
+      - file.name
+      - status
+      - confidence
+      - domains
+  - type: table
+    name: CloudOps
+    filters:
+      and:
+        - exams.contains("cloudops")
+    order:
+      - file.name
+      - status
+      - confidence
+      - domains
+  - type: table
+    name: 미완료
+    filters:
+      and:
+        - status != "done"
+    order:
+      - file.name
+      - status
+      - confidence
+      - exams
