@@ -9,11 +9,11 @@ tags:
 
 | 시험          | 관점  | 태그          | 강의자료                                                                               |
 | ----------- | --- | ----------- | ---------------------------------------------------------------------------------- |
-| [[SAA-C03]] | 설계  | `#saa`      | [[AWS Certified Solutions Architect Slides v47.pdf\|SAA 슬라이드 (879p)]]              |
-| [[DVA-C02]] | 개발  | `#dva`      | [[AWS Certified Developer Slides v44.pdf\|DVA 슬라이드 (913p)]]                        |
-| [[SOA-C03]] | 운영  | `#cloudops` | [[AWS Certified CloudOps Engineer Associate Slides v41.pdf\|CloudOps 슬라이드 (734p)]] |
+| [[003 SAA-C03\|SAA-C03]] | 설계  | `#saa`      | [[AWS Certified Solutions Architect Slides v47.pdf\|SAA 슬라이드 (879p)]]              |
+| [[004 DVA-C02\|DVA-C02]] | 개발  | `#dva`      | [[AWS Certified Developer Slides v44.pdf\|DVA 슬라이드 (913p)]]                        |
+| [[005 SOA-C03\|SOA-C03]] | 운영  | `#cloudops` | [[AWS Certified CloudOps Engineer Associate Slides v41.pdf\|CloudOps 슬라이드 (734p)]] |
 
-진도 현황: [[진도표.base|📊 진도표]]
+진도 현황: [[진도표.base|📊 진도표]] · 학습 순서: [[002 추천 학습 순서|추천 학습 순서]]
 
 ## Vault의 원칙
 

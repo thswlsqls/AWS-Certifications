@@ -1,3 +1,8 @@
 ## Udemy 유료 강의 슬라이드
 /slides/*
 /vault/Attachments
+
+# Obsidian 세션 상태 (사용자별로 달라지는 파일)
+/.obsidian/
+vault/.obsidian/workspace.json
+vault/.obsidian/graph.json

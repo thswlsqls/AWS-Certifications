@@ -10,7 +10,7 @@ domains:
   - dva/development
   - cloudops/reliability
 status: todo
-confidence: -2
+confidence: 1
 tags:
   - service
   - saa/compute

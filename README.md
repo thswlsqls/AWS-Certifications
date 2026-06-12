@@ -13,10 +13,11 @@ AWS Associate 자격증 3종을 준비하기 위한 **Obsidian vault** 저장소
 ```
 AWS-Certifications/
 ├── vault/                  # Obsidian vault (Obsidian에서 이 폴더를 열기)
-│   ├── Home.md             # vault 규칙과 서비스 노트 지도 — 시작점
-│   ├── SAA-C03.md          # 시험 노트 (도메인 비중표, 슬라이드 목차)
-│   ├── DVA-C02.md
-│   ├── SOA-C03.md
+│   ├── 001 Home.md         # vault 규칙과 서비스 노트 지도 — 시작점
+│   ├── 002 추천 학습 순서.md  # SAA → DVA → CloudOps 학습 순서 가이드
+│   ├── 003 SAA-C03.md      # 시험 노트 (도메인 비중표, 슬라이드 목차)
+│   ├── 004 DVA-C02.md
+│   ├── 005 SOA-C03.md
 │   ├── S3.md, EC2.md, …    # 서비스 노트 (vault 루트에 평평하게 배치)
 │   ├── 진도표.base          # Obsidian Bases 진도 추적기
 │   ├── Templates/          # 서비스 노트 템플릿
@@ -55,7 +56,7 @@ S3처럼 세 시험 모두에 등장하는 서비스도 노트는 **하나만** 
 ## 사용 방법
 
 1. Obsidian에서 `vault/` 폴더를 vault로 엽니다.
-2. `Home.md`에서 시작해 시험 노트와 서비스 노트 지도를 따라갑니다.
+2. `001 Home.md`에서 시작해 시험 노트와 서비스 노트 지도를 따라갑니다. 공부 순서는 `002 추천 학습 순서.md`를 참고합니다.
 3. 새 서비스 노트는 `Templates/서비스 노트 템플릿.md`를 적용해 vault 루트에 만듭니다.
 4. 공부하면서 노트 상단의 `status`와 `confidence`를 갱신하면 `진도표.base`에 진도가 반영됩니다.
 5. 강의자료는 `![[슬라이드.pdf#page=N]]` 형태로 노트 안에 임베드합니다.

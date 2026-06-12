@@ -21,6 +21,7 @@ views:
       - confidence
       - exams
       - domains
+    sort: []
   - type: table
     name: SAA
     filters:
