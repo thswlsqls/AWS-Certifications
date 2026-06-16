@@ -126,7 +126,64 @@ AWS의 앱과 온프레미스 데이터센터 사이 네트워크 문제(패킷 
 
 ![[AWS Certified Developer Slides v44.pdf#page=469]]
 
-%% 이 시험의 관점에서 배운 내용을 정리합니다. %%
+DVA는 관측성을 **코드·SDK로 어떻게 다루느냐**와, 분산 앱을 디버깅하는 **X-Ray**를 묻는다(트러블슈팅 도메인의 중심). 설계 관점에서 다룬 지표·로그·경보·CloudTrail은 반복하지 않고, 개발자가 직접 만지는 부분만 더한다.
+
+### CloudWatch — 개발자가 만지는 부분
+
+- **Custom Metrics (`PutMetricData`)**: EC2 메모리·디스크·로그인 사용자 수처럼 기본에 없는 지표를 직접 올린다. dimension으로 세분(Instance.id, Environment.name). **StorageResolution**: Standard 60초 / High Resolution 1·5·10·30초(고비용). **중요: 과거 2주 ~ 미래 2시간 범위의 데이터만 받으므로 EC2 시계가 맞아야 한다.**
+- **EC2 Detailed Monitoring**: 기본 지표는 5분 간격, **Detailed Monitoring(유료)을 켜면 1분 간격**. ASG를 더 빨리 확장하고 싶을 때. 프리 티어 10개.
+- **Metric Filter**: 로그에서 패턴(예: "ERROR" 횟수, 특정 IP)을 지표로 만든다. **소급 적용 안 됨**(필터 만든 뒤 발생한 이벤트만 집계). 최대 3 dimension.
+- **경보 테스트**: `aws cloudwatch set-alarm-state --alarm-name ... --state-value ALARM`로 경보·알림을 강제로 발동해 테스트한다.
+- **Synthetics Canary**: API·URL·웹사이트를 주기적으로 호출해 **고객보다 먼저 문제를 잡는다**. Node.js·Python으로 짜고 headless Chrome으로 동작. 청사진: Heartbeat Monitor, API Canary, Broken Link Checker, Visual Monitoring, Canary Recorder, GUI Workflow Builder. (Route 53 장애 조치 같은 자동 대응과 엮인다.)
+- **EventBridge Schema Registry**: 이벤트 버스의 이벤트를 분석해 **스키마를 추론**하고, 그 구조에 맞는 **코드 바인딩을 생성**(버전 관리)해 애플리케이션이 이벤트 형식을 미리 알게 한다.
+
+### AWS X-Ray — 분산 추적(distributed tracing)
+
+마이크로서비스는 로그만으로 디버깅하기 어렵다. X-Ray는 요청 하나가 거쳐 간 서비스들을 **service map**으로 그려, 어디서 느려지고 어디서 에러가 나는지 시각적으로 보여준다.
+
+**개념(용어 구분이 출제 포인트)**
+
+- **Segment**: 각 앱/서비스가 보내는 추적 단위. **Subsegment**: 더 자세한 내부 단위.
+- **Trace**: segment들을 모아 만든 end-to-end 경로.
+- **Sampling**: X-Ray로 보내는 요청 수를 줄여 비용을 낮춘다.
+- **Annotation**: 키-값. **인덱스되어 필터로 검색 가능**. ↔ **Metadata**: 키-값이지만 **인덱스 안 됨(검색 불가)**, 부가 정보 보관용.
+
+**활성화 방법**
+
+1. 코드(Java·Python·Go·Node.js·.NET)에 **X-Ray SDK**를 넣는다(설정 변경 수준). SDK가 AWS 호출·HTTP·DB(MySQL·PostgreSQL·DynamoDB)·SQS 호출을 캡처.
+2. **X-Ray 데몬**을 설치하거나 AWS 통합을 켠다. 데몬은 UDP 패킷을 받아 1초마다 X-Ray로 배치 전송. **앱에 X-Ray 쓰기 IAM 권한이 있어야 한다.**
+
+**Sampling Rules** (코드 수정 없이 변경 가능)
+
+- 기본: **초당 첫 요청 1건(reservoir) + 그 이상 요청의 5%(rate)**.
+- 커스텀 규칙으로 reservoir·rate를 조정(예: 특정 URL만 전부 추적하는 디버깅 규칙).
+
+**API** — 데몬이 쓰는 것
+
+- 쓰기: **`PutTraceSegments`**(세그먼트 업로드), `PutTelemetryRecords`, `GetSamplingRules`. 관리형 정책 **`AWSXrayWriteOnlyAccess`**.
+- 읽기: `BatchGetTraces`, `GetServiceGraph`, `GetTraceSummaries`(필터로 trace ID·annotation 조회 → 전체는 BatchGetTraces로), `GetTraceGraph`.
+
+**통합과 트러블슈팅**
+
+- 호환: Lambda·Elastic Beanstalk·ECS·ELB·API Gateway·EC2·온프레미스.
+- **EC2에서 안 될 때**: EC2 IAM 역할 권한 확인 + **X-Ray 데몬이 돌고 있는지** 확인.
+- **Lambda에서 켜기**: 실행 역할에 `AWSX-RayWriteOnlyAccess`, 코드에 X-Ray import, **Active Tracing 활성화**.
+- **Beanstalk**: 플랫폼에 데몬 포함, `XRayEnabled: true` 또는 `.ebextensions/xray-daemon.config`. (Multicontainer Docker엔 데몬 미제공.)
+- **ECS**: X-Ray 컨테이너를 **Daemon**으로 띄우거나 **Sidecar**로. **Fargate는 Sidecar만** 가능.
+
+### AWS Distro for OpenTelemetry (ADOT)
+
+오픈소스 OpenTelemetry의 AWS 배포판. **코드 변경 없이 auto-instrumentation 에이전트**로 추적·지표를 수집해 **X-Ray·CloudWatch·Prometheus·파트너 도구로 동시에** 보낸다. **오픈소스 표준으로 통일**하거나 **추적을 여러 목적지에 동시 전송**하고 싶으면 X-Ray에서 ADOT로 옮긴다.
+
+### CloudTrail + EventBridge (트러블슈팅 패턴)
+
+위험한 API 호출을 감지해 알린다: 사용자가 `DeleteTable`·`AuthorizeSecurityGroupIngress` 같은 호출 → CloudTrail이 기록 → EventBridge 규칙이 잡아 → SNS로 알림. (CloudTrail 이벤트 종류·90일 보관·S3+Athena는 설계 관점 참고.)
+
+### CloudTrail vs CloudWatch vs X-Ray (한 줄)
+
+- **CloudTrail** — 누가 어떤 API를 호출했나(감사, 무단 호출·변경 원인).
+- **CloudWatch** — 지표(모니터링)·로그(저장)·경보(알림).
+- **X-Ray** — 분산 시스템에서 요청을 추적, 지연·에러·병목 분석, service map.
 
 ## 운영 관점 (CloudOps) #cloudops
 
@@ -143,6 +200,13 @@ AWS의 앱과 온프레미스 데이터센터 사이 네트워크 문제(패킷 
 - CloudTrail 보관은 90일, 장기 보관·분석은 S3 + Athena. #exam/trap/monitoring
 - AWS Config Rules는 행동을 막지 못한다(deny 없음). 사전 차단은 IAM/SCP 몫. #exam/trap/monitoring
 - CloudTrail은 글로벌, AWS Config는 리전 단위 서비스. #exam/trap/monitoring
+- X-Ray **Annotation은 인덱스되어 필터 검색 가능, Metadata는 인덱스 안 됨**(검색 불가). #exam/trap/monitoring
+- X-Ray가 EC2에서 안 됨 → IAM 역할 권한 + **X-Ray 데몬 실행** 확인. Lambda는 실행 역할 `AWSX-RayWriteOnlyAccess` + **Active Tracing**. #exam/trap/monitoring
+- X-Ray Sampling 기본값: 초당 첫 1건(reservoir) + 추가분 5%(rate). 코드 수정 없이 규칙 변경. #exam/trap/monitoring
+- Fargate에서 X-Ray는 **Sidecar 컨테이너만**(Daemon 불가). #exam/trap/monitoring
+- `PutMetricData`는 과거 2주~미래 2시간만 허용 — EC2 시계가 틀리면 거부된다. #exam/trap/monitoring
+- Metric Filter는 **소급 적용 안 됨**(만든 뒤 이벤트만). EC2 1분 지표는 Detailed Monitoring. #exam/trap/monitoring
+- 오픈소스 표준 통일·다중 목적지 전송이 필요하면 X-Ray → **ADOT(AWS Distro for OpenTelemetry)**. #exam/trap/monitoring
 
 ## 관련 노트
 

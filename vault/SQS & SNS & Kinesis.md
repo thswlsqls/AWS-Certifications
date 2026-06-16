@@ -4,7 +4,7 @@ exams: [saa, dva]
 domains:
   - saa/resilient-architectures
   - dva/development
-status: learning
+status: reviewing
 confidence: 1
 tags:
   - service
@@ -113,7 +113,49 @@ SQS·SNS는 AWS 전용 프로토콜이다. 온프레미스에서 **MQTT·AMQP·S
 
 ![[AWS Certified Developer Slides v44.pdf#page=427]]
 
-%% 이 시험의 관점에서 배운 내용을 정리합니다. %%
+설계 관점에서 정리한 개념(큐·pub/sub·스트림, Visibility Timeout, Fan-Out, Firehose) 위에, DVA는 **API·코드로 어떻게 다루느냐**를 묻는다. 외워야 할 API, 한계값, 장애 처리(DLQ)가 핵심.
+
+### SQS — 알아야 할 API
+
+- `CreateQueue`(**MessageRetentionPeriod** 지정) · `DeleteQueue` · `PurgeQueue`(큐 안 메시지 전부 삭제).
+- `SendMessage`(**DelaySeconds**) · `ReceiveMessage` · `DeleteMessage`.
+- **MaxNumberOfMessages**: `ReceiveMessage`로 한 번에 받는 수, **기본 1·최대 10**.
+- **ReceiveMessageWaitTimeSeconds**: Long Polling 대기 시간(API 레벨), 또는 큐 레벨에서 설정.
+- `ChangeMessageVisibility`: 처리 시간이 더 필요할 때 Visibility Timeout 연장.
+- **배치 API**(`SendMessage`·`DeleteMessage`·`ChangeMessageVisibility`)로 호출 수를 줄여 **비용 절감**.
+
+### SQS — Dead Letter Queue (DLQ)
+
+소비자가 Visibility Timeout 안에 처리하지 못하면 메시지가 큐로 돌아온다. 이게 무한 반복되지 않도록 **MaximumReceives**(되돌아온 횟수) 임계값을 넘으면 메시지를 **DLQ**로 보낸다.
+
+- **디버깅용**: 실패한 메시지를 따로 모아 원인을 본다.
+- **FIFO 큐의 DLQ는 FIFO, Standard 큐의 DLQ는 Standard**여야 한다.
+- DLQ에서도 메시지가 만료되므로 **보존 기간을 14일로 넉넉히** 두는 게 좋다.
+- **Redrive to Source**: 코드를 고친 뒤 DLQ의 메시지를 **원본 큐로 다시 돌려보내** 재처리한다. 커스텀 코드 없이 배치로.
+
+### SQS — Delay Queue · 큰 메시지
+
+- **Delay Queue**: 메시지를 보낸 뒤 소비자가 **바로 못 보게 지연**(최대 15분, 기본 0초). 큐 레벨 기본값 또는 전송 시 **DelaySeconds**로 덮어쓴다. (Visibility Timeout은 "받은 뒤 숨김", Delay Queue는 "보낸 직후 숨김" — 시점이 다르다.)
+- **메시지 크기 한계와 SQS Extended Client**: 메시지 한 건은 최대 1MB(슬라이드 기준 1,024KB) 정도. 그보다 큰(예: 1GB) 페이로드는 **Extended Client(Java 라이브러리)**로 **본문을 S3에 두고 큐에는 메타데이터만** 넣는다.
+
+### SQS FIFO — 중복 제거와 그룹
+
+- **Deduplication(중복 제거)**: 같은 메시지가 **5분 안**에 또 들어오면 거른다. 방법 두 가지 — **Content-based**(본문의 SHA-256 해시) 또는 **Message Deduplication ID**를 직접 지정.
+- **Message Grouping**: **MessageGroupID**가 핵심.
+  - 같은 GroupID 메시지들은 **한 소비자가 순서대로** 처리.
+  - GroupID를 다르게 주면 **그룹마다 다른 소비자가 병렬 처리**(처리량↑). 단, **그룹 간 순서는 보장 안 됨**.
+
+### SNS — 발행 방식 두 가지
+
+- **Topic Publish (SDK)**: 토픽 생성 → 구독 생성 → 토픽에 발행.
+- **Direct Publish (모바일 앱 SDK)**: Platform Application 생성 → Platform Endpoint 생성 → 엔드포인트에 발행. **Google GCM·Apple APNS·Amazon ADM** 등 푸시 알림에 쓴다.
+
+### Kinesis — 개발 디테일
+
+- **KPL(Kinesis Producer Library)**: 최적화된 생산자 앱 작성용. **KCL(Kinesis Client Library)**: 최적화된 소비자 앱 작성용.
+- **소비 방식**: 표준은 **shard당 2MB/s를 소비자들이 나눠 pull**, **Enhanced Fan-Out**은 **소비자마다 shard당 2MB/s를 따로 push**받는다(소비자가 많을 때).
+- **Amazon Managed Service for Apache Flink**(옛 Kinesis Data Analytics): Flink(Java·Scala·SQL)로 스트림을 실시간 처리·변환. **Kinesis Data Streams·Amazon MSK(Kafka)**에서 읽는다. **중요: Firehose에서는 못 읽는다.**
+- Firehose record는 최대 1MB, Lambda로 변환(CSV→JSON), Parquet/ORC 변환·gzip/snappy 압축 지원.
 
 ## 시험 함정
 
@@ -124,6 +166,13 @@ SQS·SNS는 AWS 전용 프로토콜이다. 온프레미스에서 **MQTT·AMQP·S
 - 순서·중복 제거가 필요하면 **FIFO**(SQS FIFO / SNS FIFO). 단 처리량 제한(300, 배치 3000 msg/s)을 기억 #exam/trap/messaging
 - SNS·S3가 SQS 큐에 쓰게 하려면 **SQS Access Policy**로 허용해야 한다(IAM 역할이 아님) #exam/trap/messaging
 - "표준 프로토콜(MQTT·AMQP 등) 쓰는 기존 앱을 그대로 마이그레이션" → SQS/SNS 재설계가 아니라 **Amazon MQ** #exam/trap/migration
+- 처리 반복 실패 메시지를 따로 모으려면 **DLQ**(MaximumReceives 초과 시). FIFO 큐의 DLQ도 FIFO여야 함 #exam/trap/messaging
+- `ReceiveMessage`의 MaxNumberOfMessages 기본 1·최대 10. 배치 API로 비용 절감 #exam/trap/messaging
+- 256KB~1MB 넘는 큰 메시지 → **SQS Extended Client**(본문 S3, 큐엔 메타데이터) #exam/trap/messaging
+- FIFO 병렬 처리는 **MessageGroupID를 다르게** 줘서 그룹별 소비자 분리. 같은 GroupID는 한 소비자·순서 보장 #exam/trap/messaging
+- FIFO 중복 제거는 5분 창, Content-based(SHA-256) 또는 Deduplication ID #exam/trap/messaging
+- 실시간 스트림을 Flink로 처리 → **Managed Service for Apache Flink**, 단 **Firehose에서는 못 읽음**(Data Streams·MSK에서 읽음) #exam/trap/messaging
+- 소비자가 많아 각자 전용 처리량이 필요하면 Kinesis **Enhanced Fan-Out**(소비자마다 shard당 2MB/s) #exam/trap/messaging
 
 ## 관련 노트
 

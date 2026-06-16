@@ -89,7 +89,82 @@ Node.js·Python·Java·C#(.NET)·Ruby를 기본 지원하고, Custom Runtime API
 
 ![[AWS Certified Developer Slides v44.pdf#page=527]]
 
-%% 이 시험의 관점에서 배운 내용을 정리합니다. %%
+DVA는 함수를 **어떻게 호출하고, 권한을 주고, 배포·버전 관리하느냐**를 묻는다(개발 도메인의 핵심). 설계 관점에서 정리한 한계값·동시성·콜드스타트·VPC·엣지는 반복하지 않는다.
+
+### 호출 모델 3가지 (가장 중요)
+
+**① 동기(Synchronous)** — 결과를 바로 받는다.
+
+- 트리거: CLI·SDK·**API Gateway**·**ALB**. 에러 처리(재시도·지수 백오프)는 **호출하는 쪽(client)** 책임.
+- **ALB 통합**: 함수를 **Target Group**에 등록. ALB가 HTTP↔JSON을 변환(`requestContext`·`httpMethod`·`queryStringParameters`·`body`·`isBase64Encoded`). **Multi-Value Headers**를 켜면 같은 키의 값이 **배열**로 온다. ALB가 함수를 부르려면 Lambda **Resource-based Policy**가 `elasticloadbalancing`을 허용해야 한다.
+
+**② 비동기(Asynchronous)** — 결과를 안 기다린다.
+
+- 트리거: **S3·SNS·EventBridge**·CodeCommit·CodePipeline 등. 이벤트는 Lambda 내부 **Event Queue**에 쌓인다.
+- **자동 재시도 3회**(1분 뒤, 다시 2분 뒤). 그래서 **처리는 idempotent**해야 한다(중복 실행 대비). 재시도 시 CloudWatch Logs에 같은 로그가 중복으로 남는다.
+- 실패분은 **DLQ(SNS·SQS)** 또는 **Destination**으로 보낸다.
+
+**③ Event Source Mapping (ESM)** — Lambda가 소스를 **폴링**한다.
+
+- 대상: **Kinesis Data Streams·SQS(+FIFO)·DynamoDB Streams**. 공통점은 "레코드를 끌어와야 한다"는 것. 가져온 배치로 함수를 **동기 호출**.
+- **스트림(Kinesis·DynamoDB)**: shard마다 iterator. 기본은 함수가 에러를 내면 **배치 전체를 성공할 때까지 재처리**하고, 순서 보장을 위해 **해당 shard 처리를 멈춘다**. parallelization으로 shard당 최대 10배치 병렬(파티션 키 단위 순서는 유지). 저트래픽이면 batch window로 모아서.
+- **SQS**: Long Polling으로 폴링, batch size 1~10. **권장: 큐 Visibility Timeout을 함수 타임아웃의 6배**로. **DLQ는 Lambda가 아니라 SQS 큐에 설정한다**(Lambda DLQ는 비동기 전용). FIFO는 같은 GroupID 순서 보장.
+- **스케일링**: 스트림은 shard당 1호출, SQS Standard는 분당 +60 인스턴스(최대 1000배치 동시), SQS FIFO는 활성 메시지 그룹 수만큼.
+
+### Event·Context 객체
+
+핸들러는 `(event, context)`를 받는다.
+
+- **Event**: 처리할 입력 데이터(JSON → Python이면 dict). 호출한 서비스 정보가 담긴다.
+- **Context**: 실행 환경 정보 — `aws_request_id`, `function_name`, `invoked_function_arn`, `memory_limit_in_mb`, `log_group_name`, `log_stream_name`.
+
+### Destinations
+
+- **비동기 호출**: 성공/실패 각각에 목적지를 지정 — **SQS·SNS·Lambda·EventBridge bus**. AWS는 이제 DLQ보다 **Destination을 권장**(둘 다 동시 사용 가능).
+- **ESM**: 버려진 배치 → SQS·SNS.
+
+### 권한 — Execution Role vs Resource-based Policy
+
+- **Execution Role(IAM 역할)**: 함수가 **다른 AWS 서비스에 접근**할 권한. 관리형 정책 예: `AWSLambdaBasicExecutionRole`(CloudWatch Logs), `AWSLambdaKinesisExecutionRole`, `AWSLambdaDynamoDBExecutionRole`, `AWSLambdaSQSQueueExecutionRole`, `AWSLambdaVPCAccessExecutionRole`(VPC ENI), `AWSXRayDaemonWriteAccess`. **ESM도 이벤트를 읽을 때 이 역할을 쓴다.** 함수당 역할 하나가 권장.
+- **Resource-based Policy**: **다른 계정·서비스가 이 함수를 호출**하게 허용(S3 버킷 정책과 비슷). 예: S3·ALB가 함수를 부를 때.
+
+### 환경 변수
+
+키-값(문자열). 코드를 안 고치고 동작을 바꾼다. **비밀값을 KMS로 암호화**(Lambda 서비스 키 또는 내 CMK)해 담을 수 있다.
+
+### Execution Context와 /tmp (성능 함정)
+
+- **Execution Context**: 핸들러 밖에서 초기화한 것(DB 커넥션·SDK·HTTP 클라이언트)을 담는 임시 런타임. 다음 호출이 **재사용**해 초기화 시간을 아낀다. → **DB 연결 같은 무거운 초기화는 핸들러 밖에서** 한 번만(핸들러 안에서 매번 연결하면 느림).
+- **/tmp**: 큰 파일 다운로드·디스크 작업용. 최대 **10GB**, 컨텍스트가 살아 있는 동안 유지되는 임시 캐시. 영구 보관은 S3, 암호화는 KMS Data Key.
+
+### 의존성·패키징·배포 형식
+
+- **의존성**: 라이브러리를 코드와 함께 zip(Node는 `node_modules`, Python은 `pip --target`, Java는 `.jar`). **50MB 미만이면 직접 업로드, 넘으면 S3 경유.** 네이티브 라이브러리는 Amazon Linux에서 컴파일. **AWS SDK는 기본 포함.**
+- **Layers**: 무거운 의존성을 분리해 여러 함수가 **재사용**, 커스텀 런타임도 제공. **함수당 5개·총 250MB.**
+- **Container Image**: 최대 10GB 이미지를 ECR에서. **반드시 Lambda Runtime API를 구현**해야 한다(임의 Docker면 ECS/Fargate). 로컬 테스트는 RIE(Runtime Interface Emulator).
+- **CloudFormation 배포**: **inline**(`Code.ZipFile`, 의존성 못 넣음) vs **S3 경유**(`S3Bucket`·`S3Key`·`S3ObjectVersion`). **S3 코드만 바꾸고 이 키들을 안 바꾸면 CloudFormation이 함수를 갱신하지 않는다**(시험 함정). 다른 계정 배포는 S3 버킷 정책으로 get/list 허용.
+
+### Versions & Aliases (배포 도메인 핵심)
+
+- 작업 중인 건 **`$LATEST`(가변)**. 게시하면 **Version**이 생긴다. **Version = 코드 + 설정, 불변, 고유 ARN.**
+- **Alias**: Version을 가리키는 **가변 포인터**(dev·test·prod). **가중치로 카나리 배포**(예: prod alias가 V1 95% + V2 5%). 이벤트 트리거·Destination은 alias에 안정적으로 건다. **Alias는 다른 Alias를 가리킬 수 없다.**
+- **Lambda + CodeDeploy**: alias의 트래픽 전환을 자동화(SAM에 통합). **Linear**(N분마다 일정 비율 증가), **Canary**(X% 먼저 → 100%), **AllAtOnce**(즉시). **Pre/Post Traffic Hook**으로 배포 전후 함수 상태 점검. **AppSpec.yml**: Name·Alias·CurrentVersion·TargetVersion.
+
+### Function URL
+
+- 함수에 붙는 **전용 HTTPS 엔드포인트**(`https://<id>.lambda-url.<region>.on.aws`, 안 바뀜). 브라우저·curl·Postman으로 호출.
+- **퍼블릭 인터넷 전용**(PrivateLink 미지원). **alias나 `$LATEST`에만** 붙고 다른 Version엔 안 됨. Resource-based Policy·CORS 지원, Reserved Concurrency로 스로틀.
+- **AuthType NONE**(인증 없는 공개, 단 Resource Policy가 공개를 허용해야) vs **AWS_IAM**(`lambda:InvokeFunctionUrl` 필요. **같은 계정은 Identity OR Resource 정책, 크로스 계정은 둘 다 ALLOW**).
+
+### 로깅·모니터링·추적
+
+- **CloudWatch Logs**: 실행 로그(역할에 쓰기 권한 필요). **Metrics**: Invocations·Duration·ConcurrentExecutions·Errors·Throttles·**Iterator Age**(스트림 지연).
+- **X-Ray Active Tracing**: 설정에서 켜면 데몬을 알아서 띄운다. 역할에 `AWSXRayDaemonWriteAccess`, 코드에 X-Ray SDK. 환경 변수 `_X_AMZN_TRACE_ID`·`AWS_XRAY_CONTEXT_MISSING`·`AWS_XRAY_DAEMON_ADDRESS`. ([[CloudWatch & CloudTrail & Config|X-Ray 상세]])
+- **CodeGuru Profiling**: 런타임 성능 인사이트(Java·Python). 켜면 프로파일러 Layer·환경 변수·`AmazonCodeGuruProfilerAgentAccess` 정책이 붙는다.
+
+### RAM·CPU 튜닝
+
+RAM 128MB~10GB(1MB 단위). RAM을 올리면 vCPU도 늘어난다 — **1,792MB에서 vCPU 1개**, 그 이상은 멀티스레딩을 써야 이득(최대 6 vCPU). **CPU 바운드(연산 무거움)면 RAM을 올려라.** Timeout 기본 3초·최대 900초.
 
 ## 운영 관점 (CloudOps) #cloudops
 
@@ -106,7 +181,17 @@ Node.js·Python·Java·C#(.NET)·Ruby를 기본 지원하고, Custom Runtime API
 - 동기 호출 throttle은 429 즉시 반환, 비동기는 재시도 후 **DLQ**행 — 둘을 구분 #exam/trap/lambda
 - Lambda가 DB 커넥션을 너무 많이 연다 → **RDS Proxy**(단, Lambda를 VPC 안에 둬야 함) #exam/trap/lambda
 - 엣지: 가볍고 초당 수백만이면 **CloudFront Functions**, Origin 트리거·외부 호출·요청 본문 접근이면 **Lambda@Edge** #exam/trap/lambda
+- 호출 3분류: 동기(API GW·ALB, 에러처리 클라이언트), 비동기(S3·SNS, 3회 재시도→DLQ/Destination), **ESM**(Kinesis·SQS·DynamoDB Streams를 Lambda가 폴링) #exam/trap/lambda
+- **SQS를 ESM으로 쓸 때 DLQ는 Lambda가 아니라 SQS 큐에 설정**(Lambda DLQ는 비동기 전용). 큐 Visibility Timeout은 함수 타임아웃의 6배 권장 #exam/trap/lambda
+- **$LATEST·Version은 불변, Alias는 가변 포인터**. 카나리는 alias 가중치. Alias는 다른 alias 못 가리킴 #exam/trap/deployment
+- CloudFormation S3 배포에서 **코드만 바꾸고 S3Key/S3ObjectVersion을 안 바꾸면 함수가 갱신 안 됨** #exam/trap/lambda
+- Execution Role = 함수가 다른 서비스 접근(ESM 읽기도 이걸 씀), Resource-based Policy = 다른 계정·서비스가 함수 호출 #exam/trap/lambda
+- DB 커넥션 등 무거운 초기화는 **핸들러 밖**에서(Execution Context 재사용). 핸들러 안에서 매번 연결하면 느림 #exam/trap/lambda
+- RAM 1,792MB에서 vCPU 1개, CPU 바운드면 RAM을 올려 성능 확보 #exam/trap/lambda
+- Container Image는 **Lambda Runtime API 구현 필수**(임의 Docker는 ECS/Fargate). Layer는 함수당 5개·총 250MB #exam/trap/lambda
+- Function URL은 퍼블릭 인터넷 전용(PrivateLink 미지원), alias·$LATEST에만. AuthType: 같은 계정 OR·크로스 계정 AND #exam/trap/lambda
+- CodeDeploy 트래픽 전환: Linear/Canary/AllAtOnce + Pre/Post Traffic Hook #exam/trap/deployment
 
 ## 관련 노트
 
-[[API Gateway]] · [[DynamoDB]] · [[SQS & SNS & Kinesis]] · [[Step Functions & AppSync]] · [[S3]] · [[Cognito]] · [[CloudFront & Global Accelerator]] · [[RDS & Aurora & ElastiCache]] · [[VPC]]
+[[API Gateway]] · [[DynamoDB]] · [[SQS & SNS & Kinesis]] · [[Step Functions & AppSync]] · [[S3]] · [[Cognito]] · [[CloudFront & Global Accelerator]] · [[RDS & Aurora & ElastiCache]] · [[VPC]] · [[CICD]] · [[CloudFormation]] · [[CloudWatch & CloudTrail & Config]] · [[컨테이너 서비스]] · [[ELB & Auto Scaling]] · [[KMS & 암호화]]
