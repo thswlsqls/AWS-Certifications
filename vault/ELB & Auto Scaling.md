@@ -9,7 +9,7 @@ domains:
   - saa/high-performing-architectures
   - dva/development
   - cloudops/reliability
-status: learning
+status: reviewing
 confidence: 1
 tags:
   - service
@@ -115,7 +115,58 @@ LB의 SG는 80·443을 전체에 열고, 백엔드 인스턴스의 SG는 소스�
 
 ![[AWS Certified CloudOps Engineer Associate Slides v41.pdf#page=71]]
 
-%% 이 시험의 관점에서 배운 내용을 정리합니다. %%
+설계(SAA) 섹션이 "어떤 LB·어떤 스케일링을 고르나"였다면, 운영 관점은 **돌고 있는 LB·ASG를 어떻게 모니터링하고, 장애를 진단하고, 무중단으로 갱신·복구하느냐**다. (LB 4종·target group·sticky session·cross-zone·SNI·scaling 정책 기초는 SAA 섹션 참고.)
+
+### ELB Health Check 상태와 설정
+
+- 타겟 상태: **Initial**(등록 중)·Healthy·Unhealthy·**Unused**(미등록)·**Draining**(등록 해제 중)·**Unavailable**(health check 비활성).
+- 설정값: `HealthCheckProtocol`·`Port`·`Path`, `HealthCheckTimeoutSeconds`(기본 5), `HealthCheckIntervalSeconds`(30), `HealthyThresholdCount`(3회 성공→healthy), `UnhealthyThresholdCount`(5회 실패→unhealthy).
+- **타겟 그룹에 unhealthy 타겟만 남으면 ELB는 그 unhealthy 타겟들로라도 라우팅한다**(fail-open).
+
+### LB 에러 코드와 트러블슈팅
+
+- **4XX = 클라이언트 문제**: 400(Bad Request·malformed), 401/403, 460(클라이언트가 연결 끊음), **463(`X-Forwarded-For` 헤더에 IP 30개 초과)**.
+- **5XX = 서버 문제**: **500(ELB 자체 에러)**, 502(Bad Gateway), **503(Service Unavailable)**, 504(Gateway Timeout·서버 쪽 문제), 561.
+- 메트릭 기반 진단:
+  - **HTTP 503** → 응답할 AZ마다 **healthy 인스턴스가 있는지** 확인(`HealthyHostCount`).
+  - **HTTP 504** → EC2의 **keep-alive timeout이 LB의 idle timeout보다 큰지** 확인.
+  - HTTP 400 → 클라이언트가 보낸 요청이 HTTP 규격에 안 맞음.
+
+### LB 모니터링·로깅
+
+- 모든 LB 메트릭은 **CloudWatch로 직접 push**된다: `BackendConnectionErrors`, `Healthy/UnHealthyHostCount`, `HTTPCode_Backend_2XX/3XX`, **`HTTPCode_ELB_4XX`(클라이언트)·`HTTPCode_ELB_5XX`(LB 생성 에러)**, `Latency`, `RequestCount`, `RequestCountPerTarget`, **`SurgeQueueLength`**(healthy 인스턴스로 라우팅 대기 중인 요청, 최대 **1024**, ASG scale out 판단에 유용), **`SpilloverCount`**(surge queue가 가득 차 거부된 요청).
+- **Access Logs**: LB 접근 로그를 **S3에 저장**(시간·클라이언트 IP·지연·요청 경로·서버 응답·Trace ID). **S3 저장 비용만** 들고, **ELB·EC2가 종료된 뒤에도 데이터가 남아** 컴플라이언스·감사에 유용. **이미 암호화**되어 저장된다.
+- **ALB Request Tracing**: HTTP 요청마다 **`X-Amzn-Trace-Id`** 헤더를 붙여 단일 요청을 로그·분산 추적에서 따라간다. **ALB는 아직 X-Ray와 통합되지 않는다.**
+
+### Target Group 고급 설정
+
+- `deregistration_delay.timeout_seconds`(Connection Draining), `load_balancing.algorithm.type`, `stickiness.*`.
+- **Slow Start Mode**: 새로 등록된 healthy 타겟에 **warm-up 시간**을 줘서 요청을 **점진적으로(선형 증가)** 보낸다. duration이 지나거나 타겟이 unhealthy되면 종료. **0이면 비활성**(기본은 등록 즉시 전량 분배).
+- **요청 라우팅 알고리즘**: **Least Outstanding Requests**(처리 중 요청이 가장 적은 타겟 — ALB·CLB HTTP/HTTPS), **Round Robin**(균등 — ALB·CLB TCP), **Flow Hash**(프로토콜·src/dst IP·포트·TCP seq 기반, 연결 단위로 한 타겟에 고정 — NLB).
+- **ALB Listener Rules**: 위에서부터 순서대로 처리(+ Default Rule). 액션은 **forward·redirect·fixed-response**, 조건은 host-header·http-request-method·path-pattern·source-ip·http-header·query-string.
+- **Target Group Weighting**: 룰 하나에서 타겟 그룹별 **가중치**를 줘 트래픽 비율을 나눈다(예: blue 80% / green 20% — **blue/green 배포**).
+
+### ASG — 무중단 갱신과 복구
+
+- **Scaling Cooldown**: 스케일링 직후 **기본 300초** 동안 추가 스케일링을 멈추고 지표가 안정되길 기다린다. **미리 구운 AMI**를 쓰면 기동이 빨라 cooldown을 줄일 수 있다.
+- **Instance Refresh**: **Launch Template을 갱신한 뒤 전체 인스턴스를 다시 만드는** 기능(`StartInstanceRefresh`). **Minimum Healthy Percentage**로 한 번에 교체할 비율을 정하고, **warm-up time**으로 새 인스턴스가 준비될 시간을 준다.
+- **Warm Pools**: 앱 부팅이 길어 **scale-out이 느린 문제**를 해결. **미리 초기화된 인스턴스 풀**을 두고, scale-out 때 새로 띄우는 대신 풀에서 꺼내 쓴다. 설정: Minimum warm pool size, Max prepared capacity(기본 = ASG max), **Warm Pool Instance State(Running/Stopped/Hibernated)**. **Warm Pool 인스턴스는 ASG 스케일링 정책 메트릭에 잡히지 않는다.**
+- **Lifecycle Hooks**: 인스턴스가 서비스에 들어가기 전(**Pending:Wait**)·종료되기 전(**Terminating:Wait**)에 추가 작업을 끼운다(cleanup·로그 추출·특수 health check). EventBridge·SNS·SQS와 통합.
+- **SQS + ASG**: SQS 큐 길이(**`ApproximateNumberOfMessages`**) CloudWatch 메트릭 → Alarm → ASG 스케일. 큐가 쌓이면 처리 인스턴스를 늘리는 패턴.
+
+### ASG Health Check와 트러블슈팅
+
+- HA = **최소 2 AZ에 2 인스턴스**(multi-AZ ASG 구성 필수). Health check: **EC2 Status Checks·ELB Health Checks·Custom Health Checks**(`set-instance-health`로 직접 보고).
+- **ASG는 unhealthy 인스턴스를 재부팅하지 않고, 종료한 뒤 새로 띄운다.** CLI: `set-instance-health`, `terminate-instance-in-auto-scaling-group`.
+- 트러블슈팅:
+  - "instances already running, launching failed" → **MaximumCapacity 한계 도달** → max 용량을 올린다.
+  - 인스턴스 시작 실패 → **SG가 삭제됨** 또는 **키 페어가 삭제됨**.
+  - **24시간 넘게 시작에 실패하면 ASG가 프로세스를 자동 중단**한다(administration suspension).
+- **CloudWatch Metrics for ASG**(1분 간격): **ASG-level(opt-in, 수집 켜야 함)** — `GroupMinSize/MaxSize/DesiredCapacity`, `GroupInService/Pending/Standby/Terminating/TotalInstances`. **EC2-level(기본 활성)** — CPU 등(Basic 5분 / Detailed 1분).
+
+### AWS Auto Scaling (그룹 밖의 통합 서비스)
+
+ASG뿐 아니라 **여러 확장 가능 리소스**를 한 서비스로 스케일: EC2 ASG·**Spot Fleet**·**ECS**(desired count)·**DynamoDB**(WCU/RCU)·**Aurora**(read replica). **Scaling Plans**의 Dynamic scaling은 target tracking으로 가용성 40% / 균형 50% / 비용 70% 목표를 고를 수 있고, Predictive scaling은 부하를 예측해 미리 스케일한다.
 
 ## 시험 함정
 
@@ -127,9 +178,17 @@ LB의 SG는 80·443을 전체에 열고, 백엔드 인스턴스의 SG는 소스�
 - GWLB가 보이면 GENEVE 프로토콜, 포트 6081을 떠올린다. 서드파티 보안 어플라이언스 문제다. #exam/trap/elb-asg
 - Sticky session은 부하 쏠림을 만들 수 있다. 분산이 안 된다는 증상의 원인으로 출제된다. #exam/trap/elb-asg
 - ASG의 스케일링 지표는 인스턴스 하나가 아니라 그룹 전체 평균이다. #exam/trap/elb-asg
+- **HTTP 503**(Service Unavailable) → AZ마다 **healthy 인스턴스 있는지**(HealthyHostCount). **HTTP 504** → EC2 keep-alive timeout > LB idle timeout 확인. #exam/trap/elb-asg
+- LB 접근 로그는 **S3**에 저장(이미 암호화), ELB·EC2가 사라져도 보존. ALB 요청 추적은 **`X-Amzn-Trace-Id`**(X-Ray 통합은 아직 없음). #exam/trap/elb-asg
+- `SurgeQueueLength`(최대 1024) 쌓임·`SpilloverCount`(거부) → 스케일 아웃 신호. #exam/trap/elb-asg
+- **ASG는 unhealthy 인스턴스를 재부팅하지 않고 종료 후 재생성**한다. #exam/trap/elb-asg
+- Launch Template 갱신 후 전체 인스턴스 교체 → **Instance Refresh**(Min Healthy %). scale-out 지연 해소 → **Warm Pools**. #exam/trap/elb-asg
+- 종료/시작 직전에 cleanup·로그 추출 → **Lifecycle Hooks**(Pending:Wait / Terminating:Wait). #exam/trap/elb-asg
+- ASG가 **24시간 넘게 인스턴스 시작에 실패**하면 프로세스 자동 중단(administration suspension). 시작 실패 흔한 원인: SG·키페어 삭제, MaximumCapacity 도달. #exam/trap/elb-asg
+- ASG-level 메트릭(GroupDesiredCapacity 등)은 **opt-in**(메트릭 수집을 켜야 보임). #exam/trap/elb-asg
 
 %% 연습문제에서 틀리거나 헷갈린 지점을 위 형식으로 계속 추가합니다. 시험 직전 주에 `tag:#exam/trap` 검색으로 한 번에 모아 봅니다. %%
 
 ## 관련 노트
 
-[[EC2]] · [[Route 53]] · [[CloudWatch & CloudTrail & Config]] · [[컨테이너 서비스]] · [[KMS & 암호화]]
+[[EC2]] · [[Route 53]] · [[CloudWatch & CloudTrail & Config]] · [[컨테이너 서비스]] · [[KMS & 암호화]] · [[SQS & SNS & Kinesis]] · [[S3]] · [[기타 서비스]]

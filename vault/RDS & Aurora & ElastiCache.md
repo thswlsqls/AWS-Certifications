@@ -5,7 +5,7 @@ domains:
   - saa/resilient-architectures
   - dva/development
   - cloudops/reliability
-status: learning
+status: reviewing
 confidence: 1
 tags:
   - service
@@ -108,7 +108,47 @@ DB 앞에 두는 관리형 연결 풀. 연결을 모아 공유해서 DB 부담(C
 
 ![[AWS Certified CloudOps Engineer Associate Slides v41.pdf#page=334]]
 
-%% 이 시험의 관점에서 배운 내용을 정리합니다. %%
+운영 강의는 Read Replica vs Multi-AZ, Aurora 6벌 복제, RDS Proxy, Redis vs Memcached 같은 구조를 SAA와 같게 다룬다(위 설계 관점으로 갈음). 운영 시험이 새로 묻는 건 **어떤 지표로 감시하고, 언제 어떻게 스케일하고, 문제를 어떻게 진단하느냐**다. "지표 이름 + 높을 때의 처방"을 외우는 게 핵심이다.
+
+### RDS 모니터링 — CloudWatch · Enhanced Monitoring · Performance Insights
+
+세 가지가 보는 위치가 다르다(시험에서 구분).
+
+- **CloudWatch Metrics**: **하이퍼바이저에서** 수집(DB 바깥). `DatabaseConnections`·`SwapUsage`·`ReadIOPS`/`WriteIOPS`·`ReadLatency`/`WriteLatency`·`DiskQueueDepth`·`FreeStorageSpace`.
+- **Enhanced Monitoring**: **DB 인스턴스 안의 에이전트에서** 수집. **프로세스·스레드별 CPU 사용**을 봐야 할 때(CloudWatch의 하이퍼바이저 지표로는 안 보임). 50개+ CPU·메모리·파일시스템·디스크 I/O 지표.
+- **Performance Insights**: DB 부하를 시각화·분석. 부하를 **By Waits**(병목 리소스: CPU·IO·lock), **By SQL**(문제 쿼리), **By Hosts**(부하 큰 서버), **By Users**(부하 큰 사용자)로 쪼개 본다. **`DBLoad`** = 활성 세션 수. 어떤 쿼리가 DB를 누르는지 찾는다. Proactive Recommendation은 유료.
+
+### RDS 로그 · 이벤트 알림
+
+- **RDS Database Log Files**: General·Audit·Error·Slow Query 로그를 **CloudWatch Logs**로 보내고, **Metric Filter**로 에러 패턴을 잡아 **CloudWatch Alarm → SNS**로 DBA에게 알린다.
+- **RDS Events & Event Subscriptions**: DB 인스턴스·스냅샷·파라미터/보안 그룹 관련 이벤트(예: 상태가 pending→running, 생성·failover)를 **SNS로 구독**해 알림받는다. **Event Source**(인스턴스·SG 등)와 **Event Category**(creation·failover 등)를 지정. **EventBridge로도** 전달된다.
+
+### RDS Multi-AZ Failover와 백업 운영
+
+- **Failover가 일어나는 경우**: primary **장애**·**OS 소프트웨어 패치**·**네트워크 단절**·**modify(인스턴스 타입 변경)**·**busy/무응답**·**스토리지 장애**, **AZ 장애**, 그리고 **Reboot with failover**로 수동 유발.
+- **Backup vs Snapshot(운영 디테일)**: 자동 백업은 연속·PITR(유지보수 윈도에 수행). **스냅샷은 I/O를 써서 DB가 수 초~수 분 멈출 수 있다** — 단 **Multi-AZ면 standby에서 떠 master에 영향 없다.** 첫 스냅샷만 full, 이후 증분. **수동 스냅샷은 만료가 없고**, DB 삭제 시 **final snapshot**을 뜰 수 있다.
+- **Snapshot 공유**: **수동 스냅샷만** 계정 간 공유(자동은 먼저 복사). **비암호화 또는 CMK로 암호화된 것만** 공유되고, 암호화 스냅샷을 공유하면 **그 CMK도 공유**해야 하며 대상 계정에 KMS 권한(`kms:DescribeKey`·`CreateGrant`·`Decrypt` 등)이 필요하다.
+
+### Aurora 운영 — Backtracking · 지표
+
+- **Aurora Backtracking**: 클러스터를 **시간상 앞뒤로 되감기(최대 72시간)**. **새 클러스터를 안 만드는 in-place 복구**라 빠르다. **Aurora MySQL만.** (스냅샷 복원·PITR과 구분 — 그쪽은 새 클러스터를 만든다.)
+- **Aurora CloudWatch 지표**: **`AuroraReplicaLag`**(primary→replica 복제 지연)·`AuroraReplicaLagMaximum`/`Minimum`(클러스터 내 최대·최소). **lag이 크면** 어떤 replica에 붙느냐에 따라 사용자가 다른 데이터를 본다(eventual consistency). 그 외 `DatabaseConnections`·`InsertLatency`.
+
+### ElastiCache 스케일링 — Redis · Memcached
+
+- **Redis (Cluster Mode Disabled)**: **수평** = read replica 추가/제거(**최대 5개**), **수직** = 더 큰/작은 노드 타입(내부적으로 새 node group 만들고 복제 후 DNS 갱신).
+- **Redis (Cluster Mode Enabled)**: **Online Scaling**(무중단, 성능 약간 저하) vs **Offline Scaling**(중단되지만 노드 타입 변경·엔진 업그레이드 등 추가 설정 가능). 수평은 **Resharding**(샤드 추가/제거)·**Shard Rebalancing**(키 공간 균등 분배).
+- **Memcached**: 클러스터 **1~40 노드**(soft limit). 수평은 노드 추가/제거 + **Auto Discovery**(configuration endpoint으로 모든 노드를 자동 식별 — 앱이 노드를 일일이 몰라도 됨). **수직 스케일은 새 클러스터를 만들어 옮긴다(노드는 빈 채로 시작).**
+
+### 캐시 모니터링 지표 (시험 — 높을 때의 처방)
+
+Redis·Memcached 공통으로 자주 나온다.
+
+- **`Evictions`**: 메모리가 차서 만료 안 된 항목을 쫓아낸 수. **처방: eviction policy(LRU 등) 설정, 더 큰 노드(수직)나 노드 추가(수평).**
+- **`CPUUtilization`**: 호스트 CPU. **처방: 더 큰 노드나 노드 추가.**
+- **`SwapUsage`**: **50MB를 넘기면 안 된다.** 처방: 예약 메모리를 충분히.
+- **`CurrConnections`**: 동시 연결 수가 비정상이면 **앱 동작을 점검.**
+- Redis는 추가로 `DatabaseMemoryUsagePercentage`·`ReplicationLag`·`ReplicationBytes`, Memcached는 `FreeableMemory`.
 
 ## 시험 함정
 
@@ -122,9 +162,16 @@ DB 앞에 두는 관리형 연결 풀. 연결을 모아 공유해서 DB 부담(C
 - Lambda가 DB 연결을 고갈시키는 문제의 답은 RDS Proxy다. RDS Proxy는 public 접근이 안 된다. #exam/trap/rds
 - 게임 리더보드·실시간 순위는 Redis Sorted Sets다. Memcached에는 없다. #exam/trap/elasticache
 - 캐시 가용성·영속성이 요구되면 Redis, 멀티스레드 단순 캐시면 Memcached. #exam/trap/elasticache
+- RDS 모니터링 위치 구분: **CloudWatch=하이퍼바이저**, **Enhanced Monitoring=인스턴스 내 에이전트**(프로세스/스레드별 CPU). 부하 쿼리 분석은 **Performance Insights**(Waits·SQL·Hosts·Users, DBLoad=활성 세션). #exam/trap/rds
+- RDS 이벤트 알림 → **Event Subscriptions**(SNS, Event Source+Category)·EventBridge. DB 로그는 CloudWatch Logs→Metric Filter→Alarm→SNS. #exam/trap/rds
+- RDS 스냅샷은 **수동만 공유** 가능(자동은 복사 먼저), 암호화 스냅샷 공유 시 **CMK도 공유** + 대상 계정 KMS 권한. #exam/trap/rds
+- **Aurora Backtracking**: 최대 72시간 되감기, **새 클러스터 안 만듦(in-place)**, **Aurora MySQL만**. 스냅샷/PITR은 새 클러스터 생성. #exam/trap/rds
+- Aurora **AuroraReplicaLag**가 크면 replica마다 다른 데이터(eventual consistency). #exam/trap/rds
+- 캐시 **Evictions↑** → eviction policy(LRU)·노드 키우기/추가. **SwapUsage는 50MB 넘기면 안 됨**. #exam/trap/elasticache
+- Redis 수평 스케일 read replica **최대 5**. Memcached 수직 스케일은 **새 클러스터(빈 채 시작)**, 노드 자동 인식은 **Auto Discovery**(configuration endpoint). #exam/trap/elasticache
 
 %% 연습문제에서 틀리거나 헷갈린 지점을 위 형식으로 계속 추가합니다. 시험 직전 주에 `tag:#exam/trap` 검색으로 한 번에 모아 봅니다. %%
 
 ## 관련 노트
 
-[[DynamoDB]] · [[VPC]] · [[KMS & 암호화]] · [[Lambda]] · [[재해 복구 & 마이그레이션]]
+[[DynamoDB]] · [[VPC]] · [[KMS & 암호화]] · [[Lambda]] · [[재해 복구 & 마이그레이션]] · [[CloudWatch & CloudTrail & Config]] · [[SQS & SNS & Kinesis]]

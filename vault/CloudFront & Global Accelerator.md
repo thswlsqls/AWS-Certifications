@@ -5,7 +5,7 @@ domains:
   - saa/high-performing-architectures
   - dva/development
   - cloudops/networking
-status: learning
+status: reviewing
 confidence: 1
 tags:
   - service
@@ -80,7 +80,34 @@ CloudFront가 콘텐츠를 가져오는 원본(origin)은 세 가지다.
 
 ![[AWS Certified CloudOps Engineer Associate Slides v41.pdf#page=313]]
 
-%% 이 시험의 관점에서 배운 내용을 정리합니다. %%
+운영 강의는 오리진 종류·OAC·Geo Restriction·CRR 비교 같은 기본을 SAA와 같게 다룬다(위 설계 관점으로 갈음). 운영 시험이 새로 묻는 건 **캐시를 잘 듣게 만들고(Cache Policy·Origin Shield), 트래픽을 들여다보고(Access Logs·Reports), 에러를 진단하는(4xx/5xx 캐싱)** 일이다.
+
+### 캐시 적중률 높이기 — Cache Key · Cache Policy
+
+CloudFront는 엣지마다 캐시를 두고, 객체를 **Cache Key**(객체별 고유 식별자)로 구분한다. **Cache Hit 비율을 높여야** 오리진 요청이 줄어 빠르고 싸다. `CreateInvalidation` API로 일부 캐시를 무효화한다.
+
+- **Cache Policy**: 무엇을 기준으로 캐싱할지 정한다 — **HTTP Headers**(None·Whitelist), **Cookies**(None·Whitelist·All 등), **Query Strings**(None·Whitelist·All 등). 기준 항목이 적을수록 같은 Cache Key로 묶여 **적중률이 오른다.**
+- **TTL**: 0초~1년. 오리진이 **`Cache-Control`·`Expires` 헤더**로 정하거나, 직접 정책을 만들거나 **Managed Policy**를 쓴다.
+
+### Origin Shield — 오리진 부하 줄이기
+
+여러 엣지가 **같은 객체를 각자 오리진에 요청**하면 오리진이 과부하되고 비용이 는다. **Origin Shield**는 Regional Edge와 오리진 사이에 **추가 캐싱 계층**을 둬, **같은 객체의 여러 요청을 하나로 합쳐** 오리진에 보낸다. 오리진 부하·비용을 줄이고 가용성을 높인다.
+
+### 모니터링 — Access Logs · Reports
+
+- **CloudFront Access Logs**: 모든 요청을 **S3 로그 버킷**에 기록(배포마다 로그 파일). **CloudWatch Logs·Kinesis Data Firehose**로도 보낼 수 있다.
+- **CloudFront Reports**: **Cache Statistics·Popular Objects·Top Referrers·Usage·Viewers** 리포트. 모두 **Access Logs 데이터 기반**이라, 로그를 켜야 의미 있는 분석이 된다.
+
+### 트러블슈팅 — 4xx·5xx도 캐싱된다
+
+**CloudFront는 오리진(S3 등)이 돌려준 4xx·5xx 응답까지 캐싱한다.** → 오리진을 고쳐도 **잘못된 에러 응답이 TTL 동안 계속 나갈 수 있다**(필요하면 invalidation).
+
+- **4xx**: **403** = 오리진 버킷 접근 권한 없음, **404** = 요청 객체 없음.
+- **5xx**: 게이트웨이(오리진 연결) 문제.
+
+### CloudFront + ALB sticky sessions
+
+CloudFront 뒤에 ALB를 두고 **세션 고정(sticky session)**을 쓰려면, 세션 친화성을 결정하는 **쿠키(AWSALB)를 오리진으로 forward/whitelist** 해야 동작한다. 그리고 **TTL을 인증 쿠키 만료 시간보다 짧게** 둔다.
 
 ## 시험 함정
 
@@ -90,7 +117,12 @@ CloudFront가 콘텐츠를 가져오는 원본(origin)은 세 가지다.
 - Global Accelerator는 **Anycast IP 2개**, IP가 안 바뀜(클라이언트 캐시 문제 없음) #exam/trap/cloudfront
 - 오리진 바꾼 즉시 반영하려면 TTL 안 기다리고 **Cache Invalidation** #exam/trap/cloudfront
 - 국가 단위 접근 제어(저작권) → CloudFront **Geo Restriction** #exam/trap/cloudfront
+- 오리진을 고쳤는데 에러가 계속 → **CloudFront가 4xx·5xx도 캐싱**한다(403 권한·404 없음·5xx 게이트웨이). TTL 동안 지속, invalidation으로 해소 #exam/trap/cloudfront
+- 여러 엣지가 같은 객체로 오리진을 과부하 → **Origin Shield**(추가 캐싱 계층, 요청 병합) #exam/trap/cloudfront
+- 캐시 적중률↑ → **Cache Policy**에서 Header·Cookie·Query String 기준을 줄여 같은 Cache Key로 묶기. TTL은 `Cache-Control`/`Expires` 헤더로도 #exam/trap/cloudfront
+- CloudFront 요청 분석(Cache Statistics·Popular Objects 등 Reports) → **Access Logs**를 켜야 함(S3·CloudWatch Logs·Firehose) #exam/trap/cloudfront
+- CloudFront+ALB 세션 고정 → 친화성 **쿠키(AWSALB)를 forward/whitelist**, TTL을 인증 쿠키 만료보다 짧게 #exam/trap/cloudfront
 
 ## 관련 노트
 
-[[S3]] · [[Route 53]] · [[ELB & Auto Scaling]] · [[VPC]]
+[[S3]] · [[Route 53]] · [[ELB & Auto Scaling]] · [[VPC]] · [[CloudWatch & CloudTrail & Config]] · [[SQS & SNS & Kinesis]]

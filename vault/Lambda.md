@@ -5,7 +5,7 @@ domains:
   - saa/high-performing-architectures
   - dva/development
   - cloudops/deployment-automation
-status: learning
+status: reviewing
 confidence: 1
 tags:
   - service
@@ -170,7 +170,15 @@ RAM 128MB~10GB(1MB 단위). RAM을 올리면 vCPU도 늘어난다 — **1,792MB�
 
 ![[AWS Certified CloudOps Engineer Associate Slides v41.pdf#page=214]]
 
-%% 이 시험의 관점에서 배운 내용을 정리합니다. %%
+운영 시험의 Lambda 단원은 짧다. 함수 작성·배포 세부(위 SAA·DVA 섹션)는 거의 안 묻고, Lambda를 **운영 자동화를 이어 붙이는 글루(glue)**로 본다. "정해진 시각에 무언가를 돌리고, 다른 서비스의 상태 변화에 반응하는" 자리에 서버를 두지 않고 Lambda를 끼우는 그림이다.
+
+### 운영 자동화 도구로서의 Lambda
+
+- **EC2와의 대비(운영 관점)**: EC2는 계속 떠 있고 RAM·CPU에 묶이고 스케일에 손이 가지만, Lambda는 **이벤트가 올 때만 돌고 확장은 자동**이며 요청·실행시간(GB-초)으로만 과금된다. 그래서 가끔 도는 운영 작업에 서버를 상주시킬 이유가 없다.
+- **서버리스 CRON Job**: **EventBridge(CloudWatch Events) Rule**을 **CRON 또는 Rate**로 걸어 "매 1시간" 같은 일정에 Lambda를 호출한다. 정기 점검·정리·리포트 같은 운영 작업을 서버 없이 스케줄링. → "정해진 주기로 도는 작업인데 EC2를 띄우긴 아깝다"면 EventBridge + Lambda.
+- **상태 변화에 반응**: **CodePipeline EventBridge Rule**처럼 다른 서비스의 **상태 변화(state change)**를 트리거로 Lambda를 호출해 후속 작업·알림을 자동화한다.
+- **S3 Event Notifications**: 객체 이벤트(`S3:ObjectCreated`·`ObjectRemoved`·`ObjectRestore`·`Replication` 등)로 Lambda를 부른다. 이름 필터(`*.jpg`) 가능. 대표 패턴은 **업로드 이미지 썸네일 생성**, **새 파일 메타데이터를 RDS·DynamoDB에 동기화**. 보통 수 초 내 전달되지만 **간혹 1분 이상** 걸리고, **버전 미사용 객체에 동시 쓰기가 나면 이벤트가 한 번만 갈 수 있다** — 모든 쓰기에 이벤트를 보장하려면 **버킷 버저닝**을 켠다.
+- **모니터링**: 운영 중 함수 상태는 **CloudWatch**로 본다(Invocations·Errors·Throttles·Duration 등). 깊은 메트릭·X-Ray 추적은 DVA 섹션의 로깅·모니터링 정리를 참고.
 
 ## 시험 함정
 
@@ -191,6 +199,8 @@ RAM 128MB~10GB(1MB 단위). RAM을 올리면 vCPU도 늘어난다 — **1,792MB�
 - Container Image는 **Lambda Runtime API 구현 필수**(임의 Docker는 ECS/Fargate). Layer는 함수당 5개·총 250MB #exam/trap/lambda
 - Function URL은 퍼블릭 인터넷 전용(PrivateLink 미지원), alias·$LATEST에만. AuthType: 같은 계정 OR·크로스 계정 AND #exam/trap/lambda
 - CodeDeploy 트래픽 전환: Linear/Canary/AllAtOnce + Pre/Post Traffic Hook #exam/trap/deployment
+- 서버 없이 **정해진 주기로 작업 실행** → **EventBridge(CloudWatch Events) Rule(CRON/Rate) + Lambda** #exam/trap/lambda
+- **S3 이벤트로 모든 쓰기에 알림 보장** → 버킷 **버저닝** 켜기(비버전 객체 동시 쓰기 시 이벤트 1회만 갈 수 있음). 전달은 보통 수 초, 간혹 1분+ #exam/trap/lambda
 
 ## 관련 노트
 

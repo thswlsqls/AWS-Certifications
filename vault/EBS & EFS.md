@@ -5,7 +5,7 @@ domains:
   - saa/resilient-architectures
   - dva/development
   - cloudops/reliability
-status: learning
+status: reviewing
 confidence: 1
 tags:
   - service
@@ -102,7 +102,28 @@ io1/io2 한정으로, **같은 AZ 안에서** 한 볼륨을 최대 **16개** 인
 
 ![[AWS Certified CloudOps Engineer Associate Slides v41.pdf#page=225]]
 
-%% 이 시험의 관점에서 배운 내용을 정리합니다. %%
+운영 강의는 EBS 볼륨 유형·스냅샷·EFS 모드를 SAA와 거의 같게 다시 다룬다(그 부분은 위 설계 관점 정리로 갈음). 운영 시험에서 새로 나오는 핵심은 **백업을 손으로 뜨지 않고 자동화하는 것** — Amazon Data Lifecycle Manager다. 스냅샷의 보관·복구·복원 속도를 운영자가 어떻게 조절하는지도 함께 본다.
+
+### Amazon Data Lifecycle Manager (DLM) — 스냅샷·AMI 백업 자동화
+
+EBS **스냅샷**과 **EBS 기반 AMI**의 **생성·보관·삭제를 스케줄로 자동화**한다. 정기 백업, 교차 계정 스냅샷 복사, 오래된 백업 정리를 사람이 챙기지 않게 만든다. → "EBS 스냅샷을 일정에 맞춰 자동으로 뜨고 오래된 건 지워라"면 DLM.
+
+- **리소스 태그**로 대상(EC2 인스턴스·EBS 볼륨)을 식별한다. 정책에 "이 태그가 붙은 리소스를 N시간마다 백업, M개까지 보관" 식으로 건다.
+- **경계(시험 포인트)**: **DLM 밖에서 만든 스냅샷·AMI는 관리하지 못한다.** 또 **instance-store 기반 AMI도 관리 못 한다**(DLM은 EBS 기반만).
+
+### 스냅샷 운영 — 보관·복구·복원 속도 조절
+
+스냅샷 자체는 S3에 저장된다. 운영에서 다루는 건 "얼마나 싸게 보관하고, 실수로 지웠을 때 어떻게 살리고, 복원 직후 느린 걸 어떻게 없애느냐"다.
+
+- **Snapshot Archive**: 잘 안 쓰는 스냅샷을 **75% 싼 아카이브 계층**으로. 대신 복원에 **24~72시간**.
+- **Recycle Bin**: 실수로 지운 스냅샷을 되살리도록 **보존 규칙(1일~1년)**을 건다.
+- **Fast Snapshot Restore (FSR)**: 스냅샷으로 만든 볼륨은 기본적으로 **블록을 처음 읽을 때 S3에서 당겨오느라 첫 I/O가 느리다.** FSR을 켜면 **생성 즉시 완전 초기화**돼 그 지연이 없다. **특정 AZ 단위로 켜고 분당 과금이라 매우 비싸다.** `dd`·`fio`로 볼륨을 강제 초기화하는 수동 대안도 있고, **DLM이 만든 스냅샷에도 FSR을 켤 수 있다**.
+
+### 운영 시 주의
+
+- **백업(스냅샷)은 I/O를 쓴다.** 애플리케이션 트래픽이 많은 시간대에 돌리면 성능에 영향 — 한가한 때로 스케줄(DLM으로).
+- 인스턴스 terminate 시 **root 볼륨은 기본 삭제**, 추가 볼륨은 기본 유지. 보존하려면 Delete on Termination을 끈다.
+- EBS는 **AZ에 묶여** 있어 다른 AZ로 옮기려면 **스냅샷 → 다른 AZ에 복원**뿐이다.
 
 ## 시험 함정
 
@@ -114,9 +135,11 @@ io1/io2 한정으로, **같은 AZ 안에서** 한 볼륨을 최대 **16개** 인
 - EFS는 Linux(POSIX) 전용이다. Windows 인스턴스 공유 스토리지 문제의 답이 아니다. #exam/trap/ebs-efs
 - Instance Store는 stop하면 데이터가 사라진다. 영구 데이터를 두면 안 된다. #exam/trap/ebs-efs
 - 비암호화 EBS 볼륨은 그 자리에서 암호화로 못 바꾼다. 스냅샷 복사 시 암호화하는 절차를 묻는다. #exam/trap/encryption
+- 스냅샷·EBS 기반 AMI 백업을 **태그 기반으로 스케줄 자동화** → **Data Lifecycle Manager(DLM)**. DLM 밖에서 만든 것·instance-store AMI는 관리 못 함 #exam/trap/ebs-efs
+- 스냅샷 복원 직후 첫 I/O가 느린 걸 없애기 → **Fast Snapshot Restore(FSR)**(AZ 단위, 비쌈). 싸게 장기 보관 → **Snapshot Archive**(복원 24~72h), 실수 삭제 복구 → **Recycle Bin** #exam/trap/ebs-efs
 
 %% 연습문제에서 틀리거나 헷갈린 지점을 위 형식으로 계속 추가합니다. 시험 직전 주에 `tag:#exam/trap` 검색으로 한 번에 모아 봅니다. %%
 
 ## 관련 노트
 
-[[EC2]] · [[S3]] · [[KMS & 암호화]] · [[스토리지 추가 서비스]]
+[[EC2]] · [[S3]] · [[KMS & 암호화]] · [[스토리지 추가 서비스]] · [[재해 복구 & 마이그레이션]] · [[CloudWatch & CloudTrail & Config]]
