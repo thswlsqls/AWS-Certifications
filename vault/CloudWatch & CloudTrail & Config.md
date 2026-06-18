@@ -5,7 +5,7 @@ domains:
   - saa/resilient-architectures
   - dva/troubleshooting
   - cloudops/monitoring-logging
-status: learning
+status: reviewing
 confidence: 1
 tags:
   - service
@@ -189,7 +189,37 @@ DVA는 관측성을 **코드·SDK로 어떻게 다루느냐**와, 분산 앱을 
 
 ![[AWS Certified CloudOps Engineer Associate Slides v41.pdf#page=374]]
 
-%% 이 시험의 관점에서 배운 내용을 정리합니다. %%
+CloudOps는 같은 서비스를 더 깊게 운영하는 시험이라, 여기서는 설계·개발 관점에서 이미 다룬 지표·로그·경보·CloudTrail 이벤트 종류·Config 기본은 반복하지 않는다. 운영 시험에만 새로 나오거나 깊어지는 부분만 모은다. 도메인이 모니터링 22% · 신뢰성 22% · 배포 자동화 22%로 고르게 퍼져 있으니, 이 세 서비스가 자동 대응(EventBridge → SSM/Lambda)과 어떻게 엮이는지가 핵심이다.
+
+### 모니터링 깊이 — 새로 나오는 것
+
+- **CloudWatch Anomaly Detection** — 정적 임계값(static threshold) 대신, 지표의 과거 데이터로 정상 범위를 학습한 모델을 만들어 그 밖으로 벗어나면 경보를 울린다. CPU처럼 시간대별로 오르내리는 지표에 고정 임계값을 걸기 애매할 때 답이 된다. 특정 기간·이벤트를 학습에서 제외할 수도 있다.
+- **CloudWatch Logs Data Protection** — 로그에 섞여 들어온 민감정보(이메일·비밀번호·카드번호·주민번호 등)를 ML로 찾아 마스킹한다. Data Protection Policy에 Data Identifier를 지정(100종 이상 기본 제공 + 커스텀). 마스킹은 Logs Insights·Metric Filter·Subscription Filter에서 적용되고, **`logs:Unmask` 권한이 있는 사용자만 원본을 볼 수 있다.** 민감정보가 탐지되면 **`LogEventsWithFindings`** 지표로 알림을 걸 수 있다.
+- **CloudWatch Internet Monitor vs Network Synthetic Monitor** — 둘 다 에이전트가 필요 없지만 보는 곳이 다르다. **Internet Monitor**는 AWS 위 앱과 **인터넷 최종 사용자**(도시·통신망 ASN·클라이언트 위치) 사이 문제를 AWS 글로벌 네트워크 데이터로 본다. **Network Synthetic Monitor**는 AWS와 **온프레미스 데이터센터** 사이를 Direct Connect/S2S VPN으로 ICMP·TCP 테스트한다. "최종 사용자 체감 지연" → Internet Monitor, "DC 사이 패킷 손실" → Network Synthetic Monitor.
+- **Synthetics Canary in a VPC** — VPC 안 엔드포인트도 카나리로 감시할 수 있는데, **VPC에 DNS Resolution과 DNS Hostnames가 켜져 있어야 한다.** 카나리가 CloudWatch로 지표를 보내는 경로는 둘 중 하나다 — 퍼블릭 인터넷이면 NAT Gateway 경유, 내부망으로만 보내려면 CloudWatch용 VPC(Interface) Endpoint 경유.
+- **Container Insights Enhanced Visibility** — 기본은 클러스터·서비스 단위 지표만 준다. **Enhanced Visibility**를 켜야 task·container 단위까지 내려간다. 컨테이너 하나의 과도한 리소스 사용·스로틀링을 추적해야 하면 이걸 켠다. (ECS·Fargate·EKS·ROSA 지원, sidecar 불필요.)
+
+### 신뢰성·운영 자동화 — 한도 감시와 이벤트 자동 대응
+
+- **Service Quotas CloudWatch Alarms** — 서비스 한도(예: Lambda 동시 실행 수)에 가까워지면 알림. 한도 증가 요청을 미리 넣거나 리소스를 줄이게 한다. 대안으로 **Trusted Advisor**도 Service Limits 체크(약 50개) 결과를 CloudWatch로 보내 경보를 걸 수 있다. "한도에 닿기 전에 알림" 시나리오의 답.
+- **EventBridge Pipes** — 소스(DynamoDB/Kinesis Stream·SQS·MQ·MSK·Kafka) 하나를 타깃 하나로 잇는 **노코드 1:1 통합**. 중간에 Filter로 거르고 Enrichment(Lambda·Step Functions·API Gateway)로 가공한다. 소스를 여러 대상에 뿌리는 이벤트 버스와 달리, 한 소스→한 타깃 파이프라인일 때 쓴다.
+- **EventBridge Retries & DLQ** — 대상이 안 떠 있거나 네트워크 문제로 전달이 실패하면 **Retry Policy**(기본 최대 24시간·185회)로 재시도하고, 끝내 못 보낸 이벤트는 **SQS Dead Letter Queue**로 보내 나중에 처리한다.
+- **EventBridge → SSM Automation** — EventBridge 대상으로 SSM Automation Document를 걸어, 스케줄이나 특정 이벤트(예: EC2 상태 변경)에 자동 실행(부트스트랩·교정)을 건다.
+- **EventBridge Cross-account Targets** — 다른 계정으로 이벤트를 보낼 때, 대상이 **이벤트 버스면 양쪽 다 Resource-based Policy**, 대상이 **SQS·SNS·Lambda·API Gateway·KDS 같은 일반 서비스면 보내는 쪽 Execution IAM Role + 받는 쪽 Resource-based Policy**가 필요하다. 조직 전체 이벤트를 한 계정으로 모을 때 쓴다.
+
+### 감사 무결성과 멀티 계정
+
+- **CloudTrail Log File Integrity Validation** — CloudTrail이 S3에 넣은 로그가 전달 후 **변조·삭제됐는지** 확인하는 기능. 매시간 **Digest File**(지난 한 시간 로그들의 해시 목록)을 같은 버킷 다른 폴더에 남긴다. 해시는 SHA-256, 서명은 SHA-256 with RSA. 로그 버킷 자체는 버킷 정책·버저닝·MFA Delete·암호화·Object Lock으로 보호한다. "감사 로그가 위변조되지 않았음을 증명" → 이 기능.
+- **CloudTrail은 실시간이 아니다** — API 호출 후 **이벤트는 15분 이내**, **S3로 로그 파일은 5분마다** 전달. EventBridge로 API 호출에 반응하는 자동화를 짤 때 이 지연을 감안한다.
+- **CloudTrail Organizations Trail** — Organization 전체 계정의 이벤트를 한 trail로 남긴다. 같은 이름의 trail이 모든 계정에 생기고, **멤버 계정은 이 trail을 지우거나 바꿀 수 없다(보기만)**. 중앙 감사용.
+
+### 준수 자동 교정 (Config Remediation)
+
+설계 관점에서 다룬 Config Rules·Remediation을 운영 시각에서 더 본다.
+
+- **Remediation** — 비준수 리소스를 SSM Automation Document로 자동 교정. AWS 관리형 문서를 쓰거나 커스텀(Lambda 호출도 가능). 교정 후에도 여전히 비준수면 **Remediation Retries**(예: 5회)로 재시도. 자주 나오는 관리형 문서: `AWS-DisableIncomingSSHOnPort22`(SSH 포트 닫기), `AWS-ConfigureS3BucketLogging`(버킷 로깅 켜기), `AWSConfigRemediation-RevokeUnusedIAMUserCredentials`(미사용 키 비활성화).
+- **Config Aggregator** — 중앙 한 계정(aggregator 계정)에서 여러 계정·리전의 규칙·준수 상태를 한눈에 모아 본다. **Organizations를 쓰면 계정별 개별 승인(Authorization)이 필요 없다.** 규칙 자체는 각 소스 계정에 만들어야 하고, 여러 계정에 규칙을 한 번에 배포하려면 **CloudFormation StackSets**를 쓴다.
+- **알림** — 비준수를 EventBridge로 보내 Lambda·SNS·SQS로 자동 대응하거나, SNS로 설정 변경·준수 상태를 통지(전체 이벤트가 오므로 SNS Filtering이나 클라이언트단 필터로 걸러야 한다).
 
 ## 시험 함정
 
@@ -207,7 +237,20 @@ DVA는 관측성을 **코드·SDK로 어떻게 다루느냐**와, 분산 앱을 
 - `PutMetricData`는 과거 2주~미래 2시간만 허용 — EC2 시계가 틀리면 거부된다. #exam/trap/monitoring
 - Metric Filter는 **소급 적용 안 됨**(만든 뒤 이벤트만). EC2 1분 지표는 Detailed Monitoring. #exam/trap/monitoring
 - 오픈소스 표준 통일·다중 목적지 전송이 필요하면 X-Ray → **ADOT(AWS Distro for OpenTelemetry)**. #exam/trap/monitoring
+- 시간대별로 오르내리는 지표에 고정 임계값이 애매하면 정적 임계값 대신 **Anomaly Detection**(학습된 정상 범위 기반 경보). #exam/trap/monitoring
+- 로그 민감정보 마스킹은 Logs **Data Protection Policy**, 원본 열람은 **`logs:Unmask`** 권한자만. 탐지 알림은 `LogEventsWithFindings` 지표. #exam/trap/security
+- **Internet Monitor**(AWS↔인터넷 최종 사용자)와 **Network Synthetic Monitor**(AWS↔온프레미스 DC, DX/VPN) 혼동 주의. 둘 다 에이전트 불필요. #exam/trap/monitoring
+- VPC 안 엔드포인트에 Synthetics Canary를 걸려면 VPC에 **DNS Resolution + DNS Hostnames** 활성화 필수. #exam/trap/monitoring
+- Container Insights는 기본이 클러스터·서비스 단위, task·container 단위까지 보려면 **Enhanced Visibility**. #exam/trap/monitoring
+- 서비스 한도 근접 알림 → **Service Quotas CloudWatch Alarm** 또는 **Trusted Advisor + CW Alarm**(Service Limits 체크 약 50개). #exam/trap/reliability
+- EventBridge 전달 실패: **Retry Policy 기본 24시간·185회**, 끝내 실패하면 **SQS DLQ**. #exam/trap/reliability
+- EventBridge Cross-account: 대상이 이벤트 버스면 **양쪽 Resource-based Policy**, 일반 서비스(SQS·SNS·Lambda 등)면 **보내는 쪽 Execution Role + 받는 쪽 Resource Policy**. #exam/trap/reliability
+- 감사 로그 위변조 증명 → CloudTrail **Log File Integrity Validation**(Digest File, SHA-256 / SHA-256 with RSA). #exam/trap/security
+- CloudTrail은 실시간 아님 — **이벤트 15분 이내, S3 로그 파일 5분마다**. EventBridge 자동화 설계 시 감안. #exam/trap/monitoring
+- Organizations Trail은 멤버 계정이 **수정·삭제 불가(보기만)**. #exam/trap/security
+- Config Aggregator는 **Organizations 사용 시 계정별 개별 승인 불필요**, 규칙 다계정 배포는 **CloudFormation StackSets**. #exam/trap/reliability
+- Config 자동 교정은 **SSM Automation Document**로, 실패 시 **Remediation Retries**. (예: `AWS-DisableIncomingSSHOnPort22`) #exam/trap/reliability
 
 ## 관련 노트
 
-[[Systems Manager]] · [[ELB & Auto Scaling]] · [[기타 서비스]] · [[SQS & SNS & Kinesis]] · [[S3]] · [[KMS & 암호화]] · [[Organizations & 계정 관리]]
+[[Systems Manager]] · [[ELB & Auto Scaling]] · [[기타 서비스]] · [[SQS & SNS & Kinesis]] · [[S3]] · [[KMS & 암호화]] · [[Organizations & 계정 관리]] · [[CloudFormation]]

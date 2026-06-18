@@ -104,7 +104,34 @@ KMS vs CloudHSM 요점:
 
 ![[AWS Certified CloudOps Engineer Associate Slides v41.pdf#page=477]]
 
-%% 이 시험의 관점에서 배운 내용을 정리합니다. %%
+설계 관점에서 각 보안 서비스의 역할(WAF·Shield·GuardDuty·Inspector·Macie·KMS 키 유형 등)은 이미 정리했다. 운영 시험은 거기에 **여러 계정의 보안·준수를 한곳에 모으는 도구**와 **키를 실제로 회전·삭제·감시하는 운영 디테일**을 더한다. 보안 16% 도메인의 몸통이다.
+
+### 중앙 보안·감사 도구 (멀티 계정)
+
+- **Security Hub** — 여러 계정의 보안을 한 대시보드에서 보고 자동 점검하는 **중앙 도구**. Config·GuardDuty·Inspector·Macie·IAM Access Analyzer·Systems Manager·Firewall Manager·Health의 finding을 모은다. **먼저 AWS Config를 켜야** 동작한다. Organizations에 **위임 관리자(Delegated Administrator)** 계정을 지정하면 전 계정에 자동 활성화되고, CIS AWS Benchmark 같은 표준으로 전 계정을 한 번에 점검한다. 결과는 EventBridge로 보내거나 **Amazon Detective**로 넘겨 원인을 파고든다.
+- **Audit Manager** — AWS 사용 내역을 계속 감사해 **규정 준수 보고서**를 자동으로 만든다. 사전 정의 프레임워크(CIS·GDPR·HIPAA·PCI DSS·SOC 2)를 골라 범위를 정하면 증거를 자동 수집해 감사용 리포트를 낸다. "감사·인증 대비 증거 수집 자동화" → Audit Manager.
+- **Trusted Advisor** — 설치 없이 계정을 **6개 범주(비용·성능·보안·내결함성·서비스 한도·운영 우수성)**로 점검·권고한다. **전체 점검과 Support API는 Business·Enterprise 지원 플랜**에서만. ServiceLimitUsage 지표 → CloudWatch Alarm → SNS로 한도 임박 알림을 자동화하고, **Organizational View**(관리 계정에서 Trusted Access 활성화)로 전 계정 점검을 모아 본다.
+- 세 도구 정리: **Trusted Advisor**는 계정 단위 모범 사례 점검, **Security Hub**는 보안 finding 통합·자동 점검, **Audit Manager**는 규정 준수 증거·리포트.
+
+### 보안·규정 준수 로깅
+
+규정 대응에는 서비스별 보안·감사 로그를 모아 둔다: CloudTrail(API 호출)·Config(설정 준수)·CloudWatch Logs(보관)·VPC Flow Logs(VPC IP 트래픽)·ELB Access Logs·CloudFront Logs·WAF Logs. **S3에 모으면 Athena로 분석**하고, 비용 절감은 Glacier로 옮긴다. 로그 버킷은 암호화·IAM·버킷 정책·MFA로 보호한다.
+
+### KMS 운영 — 회전·삭제·감시
+
+- **자동 회전 주기 커스터마이즈**: AWS Managed Key는 1년 고정 자동. **Customer-Managed 대칭 키**는 자동 회전을 켜고 주기를 **90~2560일(기본 365일)**로 조절한다. 회전해도 **Key ID는 그대로**(backing key만 바뀜)고 이전 키는 살아 있어 옛 데이터를 복호화한다.
+- **On-Demand 회전**: Customer-Managed 대칭 키를 즉시 회전. 자동 회전이 꺼져 있어도 되고 기존 자동 일정도 바꾸지 않는다(호출 횟수 제한 있음).
+- **수동 회전**: 자동 회전 대상이 아닌 키(비대칭 키, import 키)는 새 키를 만들어 **alias를 새 키로 옮긴다**(`UpdateAlias`). 새 키는 Key ID가 다르다.
+- **키 삭제 주의**: 바로 못 지우고 **7~30일 대기(Pending deletion)** 후 삭제된다. 대기 중에는 **암호화 작업에 못 쓰고**(SSE-KMS로 암호화한 S3 객체 복호화 불가) 회전도 멈춘다. 대기 중 취소 가능. 확신이 없으면 **삭제 대신 비활성화(disable)**를 권한다.
+- **삭제 예정 키 사용 감시**: CMK가 "Pending deletion"인데 암호화 작업을 시도하면 거부되는데, 이걸 CloudTrail → CloudWatch Logs **Metric Filter("is pending deletion")** → CloudWatch Alarm → SNS로 알린다. 키 삭제로 서비스가 깨지기 전에 잡는 운영 패턴.
+- **암호화된 EBS 볼륨의 키 변경**: 볼륨의 암호화 키는 직접 못 바꾼다. **스냅샷을 떠서 새 키로 새 볼륨을 만든다.**
+- **암호화된 RDS DB 스냅샷 공유**: 다른 계정과 공유하려면 **먼저 그 CMK를 Key Policy로 대상 계정에 공유**해야 한다(EBS 교차 계정 스냅샷과 같은 원리).
+
+### Secrets Manager·ACM 운영 (회전·만료 감시)
+
+- **Secrets Manager 회전 모니터링**: CloudTrail이 회전 관련 이벤트를 **non-API 서비스 이벤트**로 기록한다 — `RotationStarted`·`RotationSucceeded`·`RotationFailed`·`RotationAbandoned`(자동 대신 수동 변경) 등. CloudWatch Logs·Alarm과 엮어 회전 실패를 알린다. 회전이 깨지면 회전용 **Lambda의 CloudWatch Logs**를 보고 디버깅한다.
+- **Parameter Store 회전**: 자체 회전 기능이 없어 **EventBridge 스케줄 → Lambda**로 값을 바꾼다. (Secrets Manager는 서비스가 직접 Lambda를 호출해 회전.)
+- **ACM 인증서 만료 감시**: **import한 인증서는 자동 갱신이 안 된다.** ACM이 **만료 45일 전부터 매일 만료 이벤트를 EventBridge**로 보내고, AWS Config의 관리형 규칙 **`acm-certificate-expiration-check`**로도 점검한다. API Gateway에 붙일 때, **Edge-Optimized는 인증서가 us-east-1(CloudFront와 같은 리전)**에, **Regional은 API와 같은 리전에 import**돼 있어야 한다.
 
 ## 시험 함정
 
@@ -117,7 +144,16 @@ KMS vs CloudHSM 요점:
 - WAF는 Layer 7(ALB·API Gateway·CloudFront), NLB(Layer 4)는 미지원. 고정 IP는 Global Accelerator + ALB. #exam/trap/security
 - Shield Standard는 무료·자동(L3/4), Advanced는 월 $3,000(전담팀·요금 보호·L7). #exam/trap/security
 - GuardDuty 입력은 CloudTrail·VPC Flow Logs·DNS Logs. Inspector는 EC2·ECR·Lambda 취약점. Macie는 S3의 PII. 역할 혼동 주의. #exam/trap/security
+- Security Hub는 **먼저 AWS Config를 켜야** 동작. 여러 계정 finding 통합 → Organizations 위임 관리자. #exam/trap/security
+- 중앙 도구 구분: Trusted Advisor(계정 모범 사례 6범주)·Security Hub(보안 finding 통합)·Audit Manager(준수 증거·리포트). #exam/trap/security
+- KMS 커스텀 대칭 키 자동 회전 주기는 **90~2560일(기본 365)**, 회전해도 Key ID 동일(backing key만 교체). #exam/trap/kms
+- KMS 키 삭제는 **7~30일 대기(Pending deletion)** — 그동안 암호화 작업 불가. 확신 없으면 삭제 대신 disable. #exam/trap/kms
+- "Pending deletion 키 사용 시도 알림" → CloudTrail → CW Logs Metric Filter → Alarm → SNS. #exam/trap/kms
+- 암호화 EBS 볼륨의 KMS 키는 직접 변경 불가 — 스냅샷 떠서 새 키로 새 볼륨 생성. #exam/trap/kms
+- 암호화된 RDS 스냅샷 교차 계정 공유는 **CMK를 Key Policy로 먼저 공유**해야 함. #exam/trap/kms
+- ACM API Gateway: **Edge-Optimized 인증서는 us-east-1**, **Regional은 API와 같은 리전**에 있어야 함. #exam/trap/security
+- Secrets Manager 회전은 CloudTrail **non-API 이벤트**(RotationStarted/Succeeded/Failed/Abandoned)로 감시. Parameter Store 회전은 EventBridge+Lambda. #exam/trap/security
 
 ## 관련 노트
 
-[[IAM]] · [[S3]] · [[RDS & Aurora & ElastiCache]] · [[CloudWatch & CloudTrail & Config]] · [[CloudFront & Global Accelerator]] · [[ELB & Auto Scaling]] · [[Route 53]]
+[[IAM]] · [[S3]] · [[RDS & Aurora & ElastiCache]] · [[CloudWatch & CloudTrail & Config]] · [[CloudFront & Global Accelerator]] · [[ELB & Auto Scaling]] · [[Route 53]] · [[Systems Manager]] · [[Organizations & 계정 관리]]
