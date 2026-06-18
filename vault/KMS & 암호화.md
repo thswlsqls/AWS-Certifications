@@ -98,7 +98,60 @@ KMS vs CloudHSM 요점:
 
 ![[AWS Certified Developer Slides v44.pdf#page=832]]
 
-%% 이 시험의 관점에서 배운 내용을 정리합니다. %%
+SAA 섹션이 키 유형·정책·서비스 선택을 다뤘다면, 여기서는 개발자가 코드와 API에서 직접 만나는 것 — 큰 데이터를 어떻게 암호화하는지, 어떤 KMS API를 부르는지, 호출이 막히면 어떻게 하는지, 배포 템플릿에서 비밀을 어떻게 참조하는지 — 를 정리한다. DVA 보안 도메인(26%)의 핵심.
+
+### 봉투 암호화(Envelope Encryption) — 4KB 넘는 데이터
+
+- **KMS의 `Encrypt` API는 한 번에 4KB까지만** 암호화한다.
+- **4KB가 넘는 데이터는 봉투 암호화**를 써야 하고, 그 중심 API가 **`GenerateDataKey`** 다. (시험: "4KB 초과 데이터 암호화 → GenerateDataKey / Envelope Encryption")
+- 흐름(암호화): `GenerateDataKey` 호출 → KMS가 **평문 데이터 키(DEK)** 와 **CMK로 암호화된 DEK**를 같이 돌려준다 → 평문 DEK로 큰 파일을 직접 암호화(클라이언트 측) → 평문 DEK는 버리고, **암호화된 DEK + 암호화된 파일**을 묶어 저장.
+- 흐름(복호화): 암호화된 DEK를 `Decrypt`로 풀어 평문 DEK를 얻고 → 그걸로 파일을 복호화.
+
+### KMS Symmetric API 요약 (어느 걸 부르나)
+
+- **Encrypt**: 4KB까지 KMS로 직접 암호화.
+- **GenerateDataKey**: DEK 생성 — **평문 DEK + 암호화된 DEK 둘 다** 반환(바로 쓸 때).
+- **GenerateDataKeyWithoutPlaintext**: **암호화된 DEK만** 반환(지금 말고 나중에 쓸 것 — 쓸 때 `Decrypt` 필요).
+- **Decrypt**: 4KB까지 복호화(DEK 포함).
+- **GenerateRandom**: 임의 바이트 문자열 반환.
+
+### Encryption SDK & Data Key Caching
+
+- **AWS Encryption SDK**가 봉투 암호화를 대신 구현해 준다. CLI로도 있고 Java·Python·C·JavaScript 지원. 암호화된 DEK를 암호문(ciphertext)에 함께 담아 돌려준다.
+- **Data Key Caching**: 매번 새 DEK를 만들지 않고 **재사용**해 KMS 호출 수를 줄인다(보안과의 trade-off). `LocalCryptoMaterialsCache`로 max age·max bytes·max messages를 정한다.
+
+### KMS Request Quotas — ThrottlingException
+
+- 요청 한도를 넘기면 **`ThrottlingException`**. 대응은 **지수 백오프(exponential backoff)**.
+- **암호 연산(Decrypt·Encrypt·GenerateDataKey 등)은 quota를 공유**하고, **AWS가 나 대신 부르는 호출(예: SSE-KMS)도 포함**된다. 그래서 SSE-KMS를 많이 쓰면 throttle이 날 수 있다.
+- 대응: `GenerateDataKey`라면 **Encryption SDK의 DEK 캐싱**, 그래도 부족하면 **quota 증액 요청**.
+
+### S3 Bucket Key — SSE-KMS 호출 줄이기
+
+S3에 SSE-KMS를 쓸 때 KMS 호출이 많아 비싸지는 걸 푼다. **S3 Bucket Key**를 한 번 만들어 그걸로 객체들의 DEK를 생성하면 **S3→KMS 호출과 비용이 약 99% 감소**한다. CloudTrail에 찍히는 KMS 이벤트도 줄어든다.
+
+### CloudWatch Logs 암호화
+
+- 로그를 KMS 키로 암호화할 수 있고, **로그 그룹 단위**로 CMK를 연결한다.
+- **콘솔로는 CMK를 연결할 수 없다.** CloudWatch Logs **API를 써야** 한다: 이미 있는 로그 그룹은 `associate-kms-key`, 없으면 `create-log-group`으로 만들 때 지정.
+
+### CodeBuild의 비밀 처리
+
+- 비밀을 **환경 변수에 평문으로 넣지 말 것.** 대신 환경 변수가 **Parameter Store 파라미터**나 **Secrets Manager 비밀**을 참조하게 한다.
+- VPC 안 리소스에 접근하려면 CodeBuild에 **VPC 설정**을 지정해야 한다.
+
+### CloudFormation에서 비밀 참조 — Dynamic References
+
+CloudFormation 템플릿에서 외부에 저장된 값을 가져온다. `'{{resolve:service-name:reference-key}}'` 형식.
+
+- **`ssm`**: SSM Parameter Store의 평문 값.
+- **`ssm-secure`**: SSM Parameter Store의 SecureString.
+- **`secretsmanager`**: Secrets Manager 비밀.
+- RDS와 묶을 때: ① 템플릿에서 `AWS::SecretsManager::Secret`으로 비밀 생성 → ② RDS 인스턴스가 `{{resolve:secretsmanager:...}}`로 참조 → ③ `AWS::SecretsManager::SecretTargetAttachment`로 비밀과 DB를 연결(회전용). 또는 RDS/Aurora의 **`ManageMasterUserPassword: true`** 로 비밀 생성·회전을 통째로 맡길 수도 있다.
+
+### AWS Nitro Enclaves
+
+민감 데이터(PII·의료·금융)를 **격리된 컴퓨팅 환경**에서 처리. 컨테이너가 아니라 완전 격리된 VM이고, 영구 저장소·대화형 접근·외부 네트워킹이 없다. **Cryptographic Attestation**으로 승인된 코드만 실행하고, **KMS와 통합**돼 Enclave만 민감 데이터에 접근하게 한다. 용도: 개인 키 보호, 신용카드 처리, 안전한 다자간 연산.
 
 ## 운영 관점 (CloudOps) #cloudops
 
@@ -117,7 +170,15 @@ KMS vs CloudHSM 요점:
 - WAF는 Layer 7(ALB·API Gateway·CloudFront), NLB(Layer 4)는 미지원. 고정 IP는 Global Accelerator + ALB. #exam/trap/security
 - Shield Standard는 무료·자동(L3/4), Advanced는 월 $3,000(전담팀·요금 보호·L7). #exam/trap/security
 - GuardDuty 입력은 CloudTrail·VPC Flow Logs·DNS Logs. Inspector는 EC2·ECR·Lambda 취약점. Macie는 S3의 PII. 역할 혼동 주의. #exam/trap/security
+- KMS Encrypt는 **4KB까지**. 4KB 넘으면 **봉투 암호화 = GenerateDataKey API**. #exam/trap/kms
+- GenerateDataKey는 평문+암호화 DEK 둘 다, **GenerateDataKeyWithoutPlaintext는 암호화 DEK만**(나중에 쓸 것). #exam/trap/kms
+- KMS 호출 초과 → **ThrottlingException** → 지수 백오프. 암호 연산은 quota 공유, SSE-KMS 호출도 포함. GenerateDataKey면 **DEK 캐싱(Encryption SDK)**. #exam/trap/kms
+- S3 SSE-KMS 호출·비용 99% 절감 → **S3 Bucket Key**. #exam/trap/kms
+- CloudWatch Logs에 CMK 연결은 **콘솔 불가**, API(`associate-kms-key`/`create-log-group`)로만. #exam/trap/kms
+- CodeBuild 비밀은 환경 변수에 평문 금지 → Parameter Store/Secrets Manager 참조. #exam/trap/security
+- CloudFormation에서 비밀 참조 → Dynamic References: `ssm`(평문)·`ssm-secure`(SecureString)·`secretsmanager`(비밀). #exam/trap/security
+- 민감 데이터를 격리 환경에서 처리(승인 코드만, KMS 통합) → **Nitro Enclaves**. #exam/trap/security
 
 ## 관련 노트
 
-[[IAM]] · [[S3]] · [[RDS & Aurora & ElastiCache]] · [[CloudWatch & CloudTrail & Config]] · [[CloudFront & Global Accelerator]] · [[ELB & Auto Scaling]] · [[Route 53]]
+[[IAM]] · [[S3]] · [[RDS & Aurora & ElastiCache]] · [[CloudWatch & CloudTrail & Config]] · [[CloudFront & Global Accelerator]] · [[ELB & Auto Scaling]] · [[Route 53]] · [[CloudFormation]] · [[CICD]] · [[Lambda]]
