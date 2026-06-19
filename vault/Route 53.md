@@ -5,7 +5,7 @@ domains:
   - saa/high-performing-architectures
   - dva/development
   - cloudops/networking
-status: learning
+status: reviewing
 confidence: 1
 tags:
   - service
@@ -111,7 +111,52 @@ ALB·CloudFront 같은 AWS 리소스는 `lb1-1234.us-east-2.elb.amazonaws.com` �
 
 ![[AWS Certified CloudOps Engineer Associate Slides v41.pdf#page=539]]
 
-%% 이 시험의 관점에서 배운 내용을 정리합니다. %%
+DNS 기본·라우팅 정책·Health Check·Hybrid DNS는 위 설계 관점에서 이미 정리했다(운영 강의도 그 부분은 같다). 운영 시험이 새로 묻는 건 **DNS 질의를 어떻게 기록·감시하고, 악성 도메인을 막고, 리전 장애를 자동으로 넘기고, 여러 계정의 DNS 설정을 한곳에서 관리하느냐**다. 네트워킹 도메인 18%에 든다.
+
+### 두 종류의 질의 로깅 — 헷갈리기 쉬움
+
+| | Query Logging | Resolver Query Logging |
+| --- | --- | --- |
+| 무엇을 기록 | **공개(public)** DNS 질의 | **VPC 안 리소스가 보낸** 모든 DNS 질의 |
+| 대상 | **Public Hosted Zone만** | Private Hosted Zone, Resolver Inbound·Outbound Endpoint, DNS Firewall |
+| 보낼 곳 | CloudWatch Logs (→ S3로 내보내기) | CloudWatch Logs · S3 · Kinesis Data Firehose |
+| 멀티 계정 | — | 설정을 **AWS RAM**으로 다른 계정과 공유 |
+
+- 가르는 기준: "**인터넷에서 들어온** 도메인 질의를 보고 싶다" → Query Logging, "**내 VPC 안에서 나간** 질의(누가 뭘 찾았나)를 보고 싶다" → Resolver Query Logging.
+
+### Resolver DNS Firewall — 나가는 DNS 차단
+
+Route 53 Resolver를 거쳐 **나가는(outbound) DNS 질의를 걸러내는** 관리형 방화벽. 악성 도메인을 블랙리스트로 막거나 신뢰 도메인만 화이트리스트로 허용한다. 핵심 시나리오는 **DNS exfiltration 차단** — VPC 안의 감염된 애플리케이션이 DNS 질의에 데이터를 실어 악성 도메인으로 빼돌리는 걸 막는다. AWS Firewall Manager로 중앙 관리하고, 로그는 CloudWatch Logs·Resolver Query Logs로 보낸다.
+
+### Application Recovery Controller (ARC) — 리전 장애조치 오케스트레이션
+
+AZ·리전에 걸친 애플리케이션 복구를 자동화한다. 중단을 거의 못 견디는 멀티 리전 active/standby·active/active 구성에 쓴다.
+
+- **Readiness Check**: 대기(standby)·복제 인프라가 장애조치를 받을 준비가 됐는지 계속 점검한다.
+- **Routing Control + DNS**: "트래픽 스위치"를 켜고 꺼서 DNS·Health Check로 사용자를 AZ·리전 사이로 다시 보낸다.
+- **Zonal Shift / Region Switch**: 망가진 AZ에서 트래픽을 빼거나, 리전 단위 장애조치를 통째로 지휘한다.
+
+### 멀티 계정 DNS 운영
+
+- **Route 53 Profiles**: 여러 VPC·여러 계정의 Route 53 설정을 한곳에서 관리해 DNS 구성을 표준화한다. 담는 것은 Private Hosted Zone, Resolver Rule, DNS Firewall Rule Group, VPC Interface Endpoint. **AWS RAM**으로 계정 간 공유.
+- **Cross-Account Private Hosted Zone**: 한 계정의 Private Hosted Zone을 다른 계정의 VPC에 연결한다. 순서는 PHZ 쪽에서 `create-vpc-association-authorization`(허가) → VPC 쪽에서 `associate-vpc-with-hosted-zone`(연결).
+
+### 이메일용 DNS 레코드와 SES 연동
+
+도메인으로 메일을 주고받을 때 거는 레코드와 그 목적.
+
+| 레코드 | 목적 |
+| --- | --- |
+| MX | 들어오는 메일을 **어디로 배달**할지 |
+| TXT (SPF) | 그 도메인 이름으로 **메일을 보낼 수 있는 서버**를 명시 |
+| TXT (DKIM) | 메시지가 위변조 안 됐는지 검증하는 **서명** |
+| TXT (DMARC) | SPF·DKIM을 **통과 못 한 메일을 어떻게 처리**할지 정책 |
+
+- **SES 연동 흐름**: SES에서 도메인 확인(TXT) → DKIM 설정(CNAME 3개) → Route 53에 확인·DKIM·SPF 레코드 추가 → 받을 거면 MX 추가 → 전파되면 SES 상태가 "verified". SES의 **"Create Record in Route 53"** 버튼이 확인·DKIM·SPF 레코드를 한 번에 만들어 준다.
+
+### 사설 리소스 Health Check (운영 재확인)
+
+Route 53 health checker는 VPC 밖에 있어 **사설 엔드포인트에 직접 못 닿는다**. CloudWatch Metric → CloudWatch Alarm을 만들고, 그 **알람을 보는 Health Check**로 우회한다(상세는 위 설계 관점). 운영 문제로 자주 나온다.
 
 ## 시험 함정
 
@@ -123,6 +168,10 @@ ALB·CloudFront 같은 AWS 리소스는 `lb1-1234.us-east-2.elb.amazonaws.com` �
 - **사설 리소스 Health Check**는 직접 불가 → CloudWatch Alarm을 보는 Health Check로 우회 #exam/trap/route53
 - Failover는 Primary에 **Health Check 필수** #exam/trap/route53
 - Multi-Value는 ELB 대체재가 아니다(클라이언트 측 분산일 뿐) #exam/trap/route53
+- Query Logging은 **Public Hosted Zone**만, Resolver Query Logging은 **VPC 내부 질의** — 문제에서 공개 질의인지 VPC 내부 질의인지로 가른다 #exam/trap/route53
+- "DNS로 데이터 빼돌리기(DNS exfiltration) 차단" → **Resolver DNS Firewall** #exam/trap/route53
+- "리전 단위 장애조치를 자동 오케스트레이션" → **Application Recovery Controller**(단순 Failover 라우팅과 구분) #exam/trap/route53
+- Cross-Account PHZ 연결은 **허가(create-vpc-association-authorization) 먼저, 연결(associate-vpc-with-hosted-zone) 나중** 순서 #exam/trap/route53
 
 ## 관련 노트
 

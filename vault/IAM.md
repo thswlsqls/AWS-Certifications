@@ -5,7 +5,7 @@ domains:
   - saa/secure-architectures
   - dva/security
   - cloudops/security-compliance
-status: learning
+status: reviewing
 confidence: 1
 tags:
   - service
@@ -80,7 +80,45 @@ EC2 인스턴스 위의 애플리케이션이 AWS API를 호출해야 한다면,
 
 ![[AWS Certified CloudOps Engineer Associate Slides v41.pdf#page=526]]
 
-%% 이 시험의 관점에서 배운 내용을 정리합니다. %%
+운영 시험은 user·group·role 기본기(위 설계 관점)보다 **권한을 어떻게 제한·위임하고, 누가 무엇을 할 수 있는지 검증·감사하느냐**를 묻는다. 보안 16% 도메인이지만 멀티 계정 운영과 엮여 자주 나온다.
+
+### 권한 상한: Permission Boundary vs SCP
+
+둘 다 "여기까지만"이라는 **권한의 천장**을 정하는 도구다. 실제로 허용되는 권한은 천장과 부여된 정책의 **교집합**이라, 정책에서 `Allow`해도 천장 밖이면 못 한다.
+
+- **Permission Boundary** — managed policy로 **user 또는 role 한 개**의 최대 권한을 정한다(group에는 못 붙인다). 슬라이드 예시: 경계는 `s3/cloudwatch/ec2`만 허용하는데 정책은 `iam:CreateUser`만 허용 → 교집합이 비어 **결과 권한 없음**.
+- **SCP**(Organizations) — **계정 단위** 천장. (자세한 건 [[Organizations & 계정 관리]].)
+- 고를 때: **특정 user 한 명**만 묶고 싶으면 Permission Boundary, **계정 전체**를 묶고 싶으면 SCP. 대표 용도는 권한 위임 — 관리자가 아닌 사람에게 "이 경계 안에서는 IAM user를 직접 만들어 써라"를 허용하되 **스스로 관리자가 되는(권한 상승) 건 막는** 것.
+
+### IAM Access Analyzer — 외부 공유 탐지
+
+내 자원이 **신뢰 영역(Zone of Trust = 내 계정 또는 내 Organization) 밖으로 공유됐는지**를 찾아 finding으로 띄운다. 대상은 S3 버킷, IAM Role, KMS 키, Lambda 함수·레이어, SQS 큐, Secrets Manager 비밀. "버킷이 외부에 열려 있는지 점검" 같은 문제의 답.
+
+### Identity Federation — IAM user 없이 외부 신원으로 접근
+
+외부 사용자가 임시 role을 떠맡아(assume) AWS에 접근하게 한다. **IAM user를 안 만들어도 되는** 게 핵심. 어떤 방식인지로 갈린다.
+
+| 상황 | 선택 |
+| --- | --- |
+| 기업 AD/ADFS 등 SAML 2.0 IdP를 콘솔·CLI에 연결 | SAML Federation |
+| IdP가 SAML 2.0 호환이 아님 | Custom Identity Broker (브로커가 적절한 IAM policy를 결정) |
+| 모바일·웹 앱에서 클라이언트가 AWS 자원에 직접 접근 | Cognito Federated Identity Pool |
+| Facebook·Google 같은 OIDC로 로그인 (Web Identity Federation) | AWS는 권장 안 함 — **Cognito 사용 권고** |
+
+### AWS STS — 임시 자격 증명 발급
+
+임시·제한 권한을 발급하는 서비스. 토큰 수명은 **15분~1시간**(만료 시 갱신). API를 상황별로 외운다.
+
+- **AssumeRole** — 같은 계정(보안 강화) 또는 **다른 계정(cross-account)**의 role을 떠맡는다.
+- **AssumeRoleWithSAML** — SAML으로 로그인한 사용자용.
+- **AssumeRoleWithWebIdentity** — Facebook·Google·OIDC 로그인용. **AWS는 대신 Cognito 권고.**
+- **GetSessionToken** — MFA가 걸린 user나 root용.
+
+**Cross-account access**: 대상 계정에 role을 만들고 누가 떠맡을 수 있는지 지정 → 소스 계정 쪽에서 `AssumeRole`로 임시 자격 증명을 받아 그 계정의 자원에 접근. 운영 계정의 S3 버킷을 개발 계정 개발자에게 열어주는 그림이 전형적이다.
+
+### IAM Policy Simulator — 적용 전 권한 검증
+
+정책을 실제로 붙이기 **전에** "이 user/group/role이 `s3:PutObject`를 할 수 있나"를 시험·디버깅한다. identity 기반 정책·resource 기반 정책·Permission Boundary·SCP를 모두 반영해 계산하므로, "왜 접근이 막혔나"를 추적하는 트러블슈팅 도구로 쓴다.
 
 ## 시험 함정
 
@@ -88,6 +126,10 @@ EC2 인스턴스 위의 애플리케이션이 AWS API를 호출해야 한다면,
 - EC2 위 애플리케이션에 권한이 필요하면 Access Key 하드코딩이 아니라 IAM Role을 붙인다. #exam/trap/iam
 - Credentials Report는 계정 단위, Access Advisor는 user 단위 — 문제에서 "전체 사용자 현황"인지 "특정 사용자의 안 쓰는 권한"인지로 가른다. #exam/trap/iam
 - IAM은 글로벌 서비스라 리전별로 user를 따로 만들지 않는다. #exam/trap/iam
+- Permission Boundary는 user·role에만 붙고 group에는 못 붙인다. 실제 권한은 경계와 정책의 교집합이라, 정책에서 Allow해도 경계 밖이면 거부된다. #exam/trap/iam
+- "특정 user 한 명만 제한" → Permission Boundary, "계정 전체 제한" → SCP. 문제에서 범위가 한 명인지 계정인지로 가른다. #exam/trap/iam
+- STS API 매칭: SAML 로그인 → AssumeRoleWithSAML, OIDC/소셜 로그인 → AssumeRoleWithWebIdentity(단 AWS는 Cognito 권고), MFA → GetSessionToken. #exam/trap/iam
+- "자원이 외부에 공유됐는지 점검" → IAM Access Analyzer, "적용 전 정책이 동작하는지 테스트" → IAM Policy Simulator로 구분한다. #exam/trap/iam
 
 %% 연습문제에서 틀리거나 헷갈린 지점을 위 형식으로 계속 추가합니다. 시험 직전 주에 `tag:#exam/trap` 검색으로 한 번에 모아 봅니다. %%
 

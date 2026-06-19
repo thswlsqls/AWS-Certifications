@@ -5,7 +5,7 @@ domains:
   - saa/secure-architectures
   - dva/security
   - cloudops/networking
-status: learning
+status: reviewing
 confidence: 1
 tags:
   - service
@@ -109,7 +109,49 @@ VPC **전체**를 L3~L7로 보호. VPC 간·인바운드·아웃바운드·DX/VP
 
 ![[AWS Certified CloudOps Engineer Associate Slides v41.pdf#page=585]]
 
-%% 이 시험의 관점에서 배운 내용을 정리합니다. %%
+VPC는 4단계에서 가장 큰 단원이지만 CIDR·서브넷·IGW/NAT·SG/NACL·Peering·Endpoint·VPN/DX/TGW·IPv6·Network Firewall은 SAA와 같다(위 설계 관점으로 갈음). 운영 시험이 새로 묻는 건 **연결이 안 될 때 어디가 막혔는지 진단하고, IP를 중앙에서 관리하고, 트래픽을 기록·분석하고, 인터넷 접근을 조직 차원에서 막는** 도구들이다. 네트워킹 18% 도메인.
+
+### 연결 진단: Reachability Analyzer
+
+두 엔드포인트(EC2·ENI 등) 사이가 통하는지 **실제 패킷을 보내지 않고** 설정만으로 모델링해 판정한다.
+- **Reachable**이면 hop-by-hop 경로를 보여주고, **Not reachable**이면 **어느 구성요소가 막는지**(SG·NACL·라우팅 테이블 등) 짚어준다.
+- "EC2 A에서 B로 연결이 안 되는데 원인을 찾아라" 같은 문제의 답. Flow Logs(실제 트래픽 기록)와 달리 이건 **설정 분석**이다.
+
+### IP 중앙 관리: VPC IPAM (IP Address Manager)
+
+수백 개 계정·VPC의 IP 주소를 한곳에서 계획·추적·감시한다. IP 정보의 단일 기준점.
+- **Scope**(public·private 두 기본 스코프) → **Pool**(CIDR 묶음, 리전별 하위 풀로 쪼갬) 구조.
+- **CIDR이 겹치면 알림**을 띄운다. 안 쓰는 IP 회수, 공인 IP 사용 감사 같은 운영에 쓴다.
+
+### CIDR 변경 불가 (트러블슈팅)
+
+이미 만든 VPC·서브넷의 IPv4 CIDR은 **고칠 수 없다.** 다른 망과 겹치면 secondary CIDR을 더하거나 새 VPC를 만든다. **서브넷에 EC2를 못 띄우면 IPv6가 아니라 IPv4가 동난 것**(IPv6 공간은 큼) — 해결은 더 큰 새 서브넷 생성. (이 함정은 SAA 섹션에도 있지만 운영에서 자주 나온다.)
+
+### 운영형 NAT: Regional NAT Gateway (RNAT)
+
+기존 NAT Gateway는 AZ에 묶여 AZ마다 따로 둬야 했는데, **RNAT는 VPC 단위로 고가용성**을 제공한다. 자체 라우팅 테이블을 갖고 **퍼블릭 서브넷 없이도** 동작하며, 새 AZ에 리소스가 생기면 자동으로 확장한다. "AZ별 NATGW 관리가 부담" 시나리오의 대안.
+
+### 인터넷 접근 일괄 차단: VPC Block Public Access (BPA)
+
+VPC·서브넷의 인터넷 인바운드/아웃바운드를 **리전 단위로 중앙에서 막는다**(컴플라이언스용).
+- **Bidirectional**: 모든 인터넷 트래픽 차단. **Ingress-Only**: NAT Gateway·Egress-only IGW만 예외로 두고 차단.
+- 특정 VPC·서브넷은 예외 처리(Exclusion) 가능. 차단이 잘 됐는지는 **Reachability Analyzer**로 확인.
+
+### 규칙 관리 편의: Managed Prefix List
+
+자주 쓰는 CIDR 묶음에 이름을 붙여 SG·라우팅 테이블에서 재사용한다.
+- **Customer-Managed**: 내가 정의, RAM으로 계정·조직 간 공유, 하나 고치면 여러 SG가 한 번에 갱신.
+- **AWS-Managed**: AWS 서비스(S3·CloudFront·DynamoDB 등)의 CIDR 집합. 직접 만들거나 못 고침.
+
+### 트래픽 모니터링: VPC Flow Logs 운영 활용
+
+Flow Logs 기본과 ACTION 필드로 SG/NACL 진단하는 법은 SAA 섹션 참고. 운영 시험이 더하는 건 **로그를 어디로 흘려 무엇을 뽑느냐**다.
+- **분석 파이프라인**: CloudWatch Logs → **Contributor Insights**(상위 IP Top-10), CloudWatch Logs → Metric Filter → Alarm → SNS(SSH·RDP 시도 경보), S3 → **Athena → QuickSight**(시각화).
+- **CloudWatch로 보내려면 권한 필요**: Flow Logs에 붙는 IAM Service Role이 `logs:CreateLogGroup`·`logs:CreateLogStream`·`logs:PutLogEvents`를 가져야 한다. 로그가 안 쌓이면 이 역할 권한부터 본다.
+
+### Private Hosted Zone을 쓰려면 DNS 속성 두 개
+
+VPC의 `enableDnsSupport`(Route 53 Resolver 사용 여부, 기본 true)와 `enableDnsHostnames`(공개 DNS 이름 부여, 새 VPC는 기본 false)를 **둘 다 true**로 켜야 Route 53 **Private Hosted Zone의 커스텀 도메인이 풀린다.** 사설 DNS가 안 되면 이 두 속성부터 확인.
 
 ## 시험 함정
 
@@ -125,6 +167,11 @@ VPC **전체**를 L3~L7로 보호. VPC 간·인바운드·아웃바운드·DX/VP
 - Transit Gateway만 IP Multicast 지원. 전이적 피어링이 필요하면 Peering이 아니라 TGW. #exam/trap/vpc
 - Flow Logs의 ACTION에서 인바운드 ACCEPT인데 아웃바운드 REJECT면 SG가 아니라 NACL 문제(SG는 stateful). #exam/trap/vpc
 - AWS에서 IPv4는 끌 수 없고 모든 IPv6는 공인. IPv6 아웃바운드 전용은 Egress-only IGW. #exam/trap/vpc
+- "연결이 안 되는 원인을 패킷 안 보내고 찾기" → Reachability Analyzer, "실제 트래픽 기록으로 진단" → Flow Logs. 둘을 구분한다. #exam/trap/vpc
+- 이미 만든 VPC·서브넷 CIDR은 변경 불가. 부족하면 secondary CIDR 추가 또는 새 서브넷 생성. #exam/trap/vpc
+- Flow Logs를 CloudWatch Logs로 못 보내면 IAM Service Role의 logs:CreateLogGroup·CreateLogStream·PutLogEvents 권한부터 본다. #exam/trap/vpc
+- Private Hosted Zone 커스텀 도메인이 안 풀리면 enableDnsSupport·enableDnsHostnames를 둘 다 true로 켰는지 확인. #exam/trap/vpc
+- 인터넷 접근을 리전 단위로 일괄 차단 → VPC Block Public Access(BPA). Ingress-Only는 NAT GW·Egress-only IGW만 예외. #exam/trap/vpc
 
 ## 관련 노트
 
